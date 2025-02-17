@@ -1,0 +1,29 @@
+[project]
+name = "online-bg-removal"
+version = "0.1.0"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "imagecodecs>=2024.12.30",
+    "imageio>=2.37.0",
+    "imageio-ffmpeg>=0.6.0",
+    "norfair>=2.2.0",
+    "pandas>=2.2.3",
+    "psutil>=6.1.1",
+    "pylibtiff>=0.6.1",
+    "pyqtgraph>=0.13.7",
+    "pyside6>=6.8.2.1",
+    "pyyaml>=6.0.2",
+    "scikit-image>=0.25.1",
+    "trackpy>=0.6.4",
+    "watchdog>=6.0.0",
+]
+
+[dependency-groups]
+gpu = [
+    "cucim>=23.10.0",
+    "cupy-cuda12x>=13.3.0",
+]
+
+[tool.pdm.scripts]
+gui = "python background_remover.pyw"

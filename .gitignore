@@ -1,0 +1,20 @@
+# Compiled python files
+__pycache__/
+*.pyc
+
+# pixi environments
+.pixi
+*.egg-info
+
+# PDM
+.pdm-python
+
+# Virtual environments
+.venv/
+venv/
+
+# Log files
+cufile.log
+
+# Our own settings file
+last_settings.yaml

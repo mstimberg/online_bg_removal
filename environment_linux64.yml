@@ -1,0 +1,26 @@
+name: online_bg_removal
+channels:
+- conda-forge
+- nodefaults
+dependencies:
+- imagecodecs >=2024.6.1,<2025
+- imageio >=2.37.0,<3
+- imageio-ffmpeg >=0.6.0,<0.7
+- pandas >=2.2.3,<3
+- psutil >=6.1.1,<7
+- pylibtiff >=0.6.1,<0.7
+- libtiff >=4.6.0,<5
+- pyqtgraph >=0.13.7,<0.14
+- pyside6 >=6.7.2,<7
+- pyyaml >=6.0.2,<7
+- scikit-image >=0.24.0
+- trackpy >=0.6.4,<0.7
+- watchdog >=6.0.0,<7
+- python >=3.11
+- qt6-main >=6.7.2,<7
+- qt6-wayland >=6.7.2,<7
+- qt6-gtk-platformtheme >=6.7.2,<7
+- pip
+- pip:
+  - norfair>=2.1.1, <3
+
