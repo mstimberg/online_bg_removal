@@ -25,11 +25,11 @@ jobs:
             miniforge-version: latest
             auto-activate-base: false
         - name: Run the GUI
-          run: |
-            conda activate online_bg_removal
+          run: |            
             conda info
             conda list
             python background_remover.pyw
+          shell: bash -el {0}
           env:
             QT_QPA_PLATFORM: offscreen
             TEST_SHUTDOWN_GUI: 1
