@@ -90,8 +90,8 @@ jobs:
           QT_QPA_PLATFORM: offscreen
           TEST_SHUTDOWN_GUI: 1
 
-    test-mamba:
-      name: Test mamba install ${{ matrix.os }} / ${{ matrix.python-version }})
+    test-conda:
+      name: Test conda install ${{ matrix.os.name }} / ${{ matrix.python-version }})
       runs-on: ${{ matrix.os.name }}
       strategy:
           matrix:
@@ -110,6 +110,7 @@ jobs:
             activate-environment: online_bg_removal
             environment-file: ${{ matrix.os.env_file }}
             miniforge-version: latest
+            auto-activate-base: false
         - name: Run the GUI
           run: python background_remover.pyw
           env:
