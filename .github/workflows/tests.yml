@@ -26,6 +26,7 @@ jobs:
             auto-activate-base: false
         - name: Run the GUI
           run: |
+            conda activate online_bg_removal
             conda info
             conda list
             python background_remover.pyw
