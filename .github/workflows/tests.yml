@@ -89,3 +89,29 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
           TEST_SHUTDOWN_GUI: 1
+
+    test-mamba:
+      name: Test mamba install ${{ matrix.os }} / ${{ matrix.python-version }})
+      runs-on: ${{ matrix.os.name }}
+      strategy:
+          matrix:
+              os: [{name: ubuntu-24.04, env_file: environment_linux64.yml},
+                   {name: windows-2022, env_file: environment_other.yml},
+                   {name: macos-13, env_file: environment_other.yml},
+                   {name: macos-14, env_file: environment_other.yml}]
+              python-version: [3.11, 3.12]
+      steps:
+        - name: Checkout repository
+          uses: actions/checkout@v2
+        - uses: conda-incubator/setup-miniconda@v3
+          with:
+            auto-update-conda: true
+            python-version: ${{ matrix.python-version }}
+            activate-environment: online_bg_removal
+            environment-file: ${{ matrix.os.env_file }}
+            miniforge-version: latest
+        - name: Run the GUI
+          run: python background_remover.pyw
+          env:
+            QT_QPA_PLATFORM: offscreen
+            TEST_SHUTDOWN_GUI: 1
