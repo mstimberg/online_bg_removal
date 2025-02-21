@@ -73,7 +73,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          architecture: ${{ fromJSON('["x64", "arm64"]')[matrix.os == 'macos-14'] }}
+          architecture: ${{ fromJSON('{"ubuntu-24.04": "x64", "macos-13": "x64", "windows-2022": "X64", "macos-14": "arm64"}')[matrix.os] }}
           python-version: ${{ matrix.python-version }}
 
       - name: Install Qt
