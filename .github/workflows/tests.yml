@@ -113,6 +113,7 @@ jobs:
             auto-activate-base: false
         - name: Run the GUI
           run: python background_remover.pyw
+          shell: bash -el {0}
           env:
             QT_QPA_PLATFORM: offscreen
             TEST_SHUTDOWN_GUI: 1
