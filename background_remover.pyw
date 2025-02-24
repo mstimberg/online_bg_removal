@@ -899,6 +899,8 @@ class BackgroundRemover(QtCore.QThread):
             )
         if cp:
             removed = removed.get()
+        else:
+            removed = removed.copy()
         for counter, processed_frame in enumerate(removed):
             frame_idx = self._last_idx - n_frames + counter + 1
             relative_idx = relative_idx_start - n_frames + counter + 1
