@@ -82,7 +82,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install the project
-        run: pdm install --prod
+        run: pdm install --prod -v
           
       - name: Run the GUI
         run: pdm run gui
