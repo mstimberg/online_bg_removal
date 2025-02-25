@@ -7,7 +7,6 @@ import logging
 from logging.handlers import RotatingFileHandler
 from multiprocessing import Process
 from concurrent.futures import ThreadPoolExecutor
-import concurrent
 import os
 import shutil
 

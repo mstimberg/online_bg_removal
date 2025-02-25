@@ -94,14 +94,11 @@ jobs:
           TEST_SHUTDOWN_GUI: 1
 
     test-conda:
-      name: Test conda install ${{ matrix.os.name }} / ${{ matrix.python-version }})
-      runs-on: ${{ matrix.os.name }}
+      name: Test conda install ${{ matrix.os }} / ${{ matrix.python-version }})
+      runs-on: ${{ matrix.os }}
       strategy:
           matrix:
-              os: [{name: ubuntu-24.04, env_file: environment_linux64.yml},
-                   {name: windows-2022, env_file: environment_other.yml},
-                   {name: macos-13, env_file: environment_other.yml},
-                   {name: macos-14, env_file: environment_other.yml}]
+              os: [ubuntu-24.04, windows-2022, macos-13, macos-14]
               python-version: [3.11, 3.12]
       steps:
         - name: Checkout repository
@@ -111,7 +108,7 @@ jobs:
             auto-update-conda: true
             python-version: ${{ matrix.python-version }}
             activate-environment: online_bg_removal
-            environment-file: ${{ matrix.os.env_file }}
+            environment-file: environment.yml
             miniforge-version: latest
             auto-activate-base: false
         - name: Run the GUI

@@ -17,11 +17,11 @@ except Exception:
 
 if cp:
     xp = cp
-    from cucim.skimage.measure._label import (
-        _get_structure, _label
-    )
+    from cupyx.scipy.ndimage import label
 
-    STRUCTURE = _get_structure(2, 1)
+    STRUCTURE = np.array([[False,  True, False],
+                          [ True,  True,  True],
+                          [False,  True, False]])
 
     # Bincount kernel that ignores the background label
     _no_zero_bincount_kernel = cp.ElementwiseKernel(
@@ -103,7 +103,7 @@ def determine_labels(buffer, min_area_pixels, max_area_pixels):
 
     if cp:
         labels = cp.empty_like(binary_image, dtype=cp.int32)
-        _label(binary_image, STRUCTURE, labels, greyscale_mode=False) 
+        label(binary_image, STRUCTURE, output=labels) 
     else:
         labels = label(binary_image, connectivity=1)
 

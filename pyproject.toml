@@ -21,7 +21,6 @@ dependencies = [
 
 [dependency-groups]
 gpu = [
-    "cucim>=23.10.0",
     "cupy-cuda12x>=13.3.0",
 ]
 
