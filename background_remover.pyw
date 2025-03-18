@@ -60,6 +60,8 @@ FFMPEG_PIX_FMT = "yuv420p"
 CONSOLE_LOG_LEVEL = logging.WARNING
 FILE_LOG_LEVEL = logging.INFO
 
+MAX_FFMPEG_PROCESSES = 4  # Maximum number of ffmpeg processes to run in parallel
+
 FRAMES_PER_ZIP = 1_000_000  # a single zip file...
 
 try:
@@ -1379,6 +1381,13 @@ class VideoThread(QtCore.QThread):
                 "Generating video part using ffmpeg: "
                 + (" ".join(ffmpeg_call)).replace("%", "%%")
             )
+            # Wait if there are two many processes running in parallel
+            while len(self.processes_and_dirs) >= MAX_FFMPEG_PROCESSES:
+                logger.debug(
+                    f"Too many ffmpeg processes running ({len(self.processes_and_dirs)}), waiting for one to finish"
+                )
+                self.check_processes()
+                self.thread().msleep(500)
             process = subprocess.Popen(ffmpeg_call)
             self.processes_and_dirs.append(
                 (process, temp_movie_dir, frames, fnames, last_idx)
