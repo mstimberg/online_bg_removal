@@ -3317,12 +3317,15 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             return
 
         current_idx = self.image_preview.currentIndex
-        image = self.bg_calc.frames[current_idx]
-        if self.dark_field:
-            image = 255 - image
         roi_slice = get_roi_slice(self.roi_selector)
+
+        image = self.bg_calc.frames[current_idx]
         image = image[roi_slice]
         background = self.initial_background[roi_slice]
+        if self.dark_field:
+            image = 255 - image
+            background = 255 - background
+        
         threshold = self.threshold.value()
         subtracted = self.bg_calc.remove_background(image, background, threshold).T
         # Store zoom/pan
