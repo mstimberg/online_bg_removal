@@ -127,7 +127,7 @@ depending on whether you want to use GPU acceleration or not.
 
 
 ## License
-This work is licensed under the GNU General Public License v3.0, see the [LICENSE](./LICENSE) file.
+This work is licensed under the European Union Public Licence  v1.2, see the [LICENSE](./LICENSE) file.
 
 ## Authors
 The tool was written by Marcel Stimberg and Romain Brette at the [Institute of Intelligent Systems and Robotics](https://www.isir.upmc.fr/?lang=en) in Paris, France.
