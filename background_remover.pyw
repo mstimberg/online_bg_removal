@@ -45,8 +45,8 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import yaml
 
-MIN_AREA = 400
-MAX_AREA = 12500
+DEFAULT_MIN_AREA = 400
+DEFAULT_MAX_AREA = 12500
 
 MASK_COLOR = "#FFC300"
 ELLIPSE_COLOR = "#2219B2"
@@ -2633,7 +2633,29 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         layout.addWidget(pixel_size_label)
         layout.addWidget(self.pixel_size)
         tracking_layout.addLayout(layout)
-        controls_layout.addWidget(tracking_group)
+
+        layout = QtWidgets.QHBoxLayout()
+        track_area_label = QtWidgets.QLabel("Min/max area (µm²): ")
+        self.min_track_area = QtWidgets.QSpinBox()
+        self.min_track_area.setMinimum(1)
+        self.min_track_area.setMaximum(1000000)  # will be set to max_area value later
+        self.min_track_area.setSingleStep(10)
+        self.min_track_area.setValue(prev_settings.get("tracking", {}).get("min_area", DEFAULT_MIN_AREA))
+        self.min_track_area.setKeyboardTracking(False)
+        self.min_track_area.valueChanged.connect(self.update_pixel_size)
+        
+        self.max_track_area = QtWidgets.QSpinBox()        
+        self.max_track_area.setMaximum(1000000)
+        self.max_track_area.setSingleStep(100)
+        self.max_track_area.setValue(prev_settings.get("tracking", {}).get("max_area", DEFAULT_MAX_AREA))        
+        self.max_track_area.setKeyboardTracking(False)
+        self.max_track_area.valueChanged.connect(self.update_pixel_size)
+        self.min_track_area.setMaximum(self.max_track_area.value() - 1)
+        self.max_track_area.setMinimum(self.min_track_area.value() + 1)
+        layout.addWidget(track_area_label)
+        layout.addWidget(self.min_track_area)
+        layout.addWidget(self.max_track_area)
+        tracking_layout.addLayout(layout)
 
         self.track_cells = QtWidgets.QCheckBox("&Track cells")
         self.track_cells.setChecked(prev_settings.get("tracking", {}).get("enabled", False))
@@ -2696,6 +2718,8 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         tracking_layout.addWidget(self.track_orientation_property)
         tracking_layout.addWidget(self.zip_tracking_file)
         tracking_layout.addLayout(link_track_layout)
+
+        controls_layout.addWidget(tracking_group)
 
         # Select target folder and prefix
         target_group = QtWidgets.QGroupBox("Image saving")
@@ -2933,6 +2957,8 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self.update_tracking_preview()
 
     def update_pixel_size(self):
+        self.min_track_area.setMaximum(self.max_track_area.value() - 1)
+        self.max_track_area.setMinimum(self.min_track_area.value() + 1)
         self.update_tracking_preview()
 
     def update_darkfield(self):
@@ -2969,8 +2995,8 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             and self.subtracted_preview.getImageItem().image is not None
         ):
             image = xp.array(self.subtracted_preview.getImageItem().image)
-            min_area_pixels = MIN_AREA / (self.pixel_size.value() ** 2)
-            max_area_pixels = MAX_AREA / (self.pixel_size.value() ** 2)
+            min_area_pixels = self.min_track_area.value() / (self.pixel_size.value() ** 2)
+            max_area_pixels = self.max_track_area.value() / (self.pixel_size.value() ** 2)
             # Visualize area by plotting ellipses with a 3/1 ratio
             view_box = self.subtracted_preview.getImageItem().getViewBox()
             view_range = view_box.state["viewRange"]
@@ -3150,8 +3176,8 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             "target_folder": target_folder,
             "filename_prefix": self.target_prefix.text(),
             "pixel_size": self.pixel_size.value(),
-            "min_area": MIN_AREA,
-            "max_area": MAX_AREA,
+            "min_area": self.min_track_area.value(),
+            "max_area": self.max_track_area.value(),
         }
         file_write_params = {
             "source_folder": self.source_folder.text(),
