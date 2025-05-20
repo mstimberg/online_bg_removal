@@ -7,6 +7,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from multiprocessing import Process
 from concurrent.futures import ThreadPoolExecutor
+import concurrent
 import os
 import shutil
 
@@ -22,6 +23,7 @@ import pandas as pd
 import imageio.v3 as imageio
 
 from image_processing.regionprops import determine_labels, determine_images, extract_properties
+from image_processing.trajectory_analysis import segments_from_table, calculate_features, mark_avoiding_reactions_from_motion
 
 TRACK_IN_PARALLEL = 8
 TRIES = 10  # Number of times to try tracking a frame before giving up
@@ -45,7 +47,7 @@ def log_rotator(source, dest):
 
 
 class Tracker(Process):
-    def __init__(self, pixel_size, min_area, max_area, target_folder, roi_size, ellipse, orientation, track_tasks, link, zip_tracking_file, track_settings):
+    def __init__(self, pixel_size, min_area, max_area, target_folder, roi_size, ellipse, orientation, track_tasks, link, zip_tracking_file, calc_features, track_settings):
         super().__init__()
         self.pixel_size = pixel_size
         self.frame_rate = track_settings["frame_rate"]
@@ -55,6 +57,7 @@ class Tracker(Process):
         self.target_folder = target_folder
         self.roi_size = roi_size
         self.link = link
+        self.calc_features = calc_features
         self.zip_tracking_file = zip_tracking_file
         self.track_settings = track_settings
         props = ["bbox"]
@@ -236,10 +239,24 @@ class Tracker(Process):
                 self.logger.info(f"Linking tracks for epoch {epoch}")
                 linked = self.link_wrapper(cells_df)
                 # Note that the filename states 1_um, since linked tracks are already scaled to µm                
-                if epoch != -1:
-                    linked_fname = os.path.join(track_folder, f"tracking_{epoch:07d}_linked_{self.frame_rate:.1f}_fps_1_um.tsv")
+                if self.calc_features:
+                    segments = segments_from_table(linked)
+                    self.logger.debug("Calculating features over", len(segments), "segments")
+                    with concurrent.futures.ProcessPoolExecutor() as executor:
+                        segments = executor.map(calculate_features, segments)
+                        segments = executor.map(mark_avoiding_reactions_from_motion, segments)
+                    linked = pd.concat(segments)
+                    linked.sort_values(by='frame')
+                    self.logger.debug("Finished calculating features")
+                    if epoch != -1:
+                        linked_fname = os.path.join(track_folder, f"tracking_{epoch:07d}_linked_with_features_{self.frame_rate:.1f}_fps_1_um.tsv")
+                    else:
+                        linked_fname = os.path.join(track_folder, f"tracking_linked_with_features_{self.frame_rate:.1f}_fps_1_um.tsv")
                 else:
-                    linked_fname = os.path.join(track_folder, f"tracking_linked_{self.frame_rate:.1f}_fps_1_um.tsv")
+                    if epoch != -1:
+                        linked_fname = os.path.join(track_folder, f"tracking_{epoch:07d}_linked_{self.frame_rate:.1f}_fps_1_um.tsv")
+                    else:
+                        linked_fname = os.path.join(track_folder, f"tracking_linked_{self.frame_rate:.1f}_fps_1_um.tsv")
                 if self.zip_tracking_file:
                     linked_fname += ".gz"
                 linked.to_csv(linked_fname, sep="\t", index=False, float_format="%.2f")

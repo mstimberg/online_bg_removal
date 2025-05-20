@@ -1552,7 +1552,6 @@ class ProgressDialog(QtWidgets.QDialog):
         calculate_ellipse,
         calculate_orientation,
         link_tracks,
-        calc_features,
         zip_tracking_file,
         track_settings,
         record_video,
@@ -1601,7 +1600,6 @@ class ProgressDialog(QtWidgets.QDialog):
         self.calculate_ellipse = calculate_ellipse
         self.calculate_orientation = calculate_orientation
         self.link_tracks = link_tracks
-        self.calc_features = calc_features
         self.zip_tracking_file = zip_tracking_file
         self.track_settings = track_settings
         self.record_video = record_video
@@ -1881,7 +1879,6 @@ class ProgressDialog(QtWidgets.QDialog):
                 ellipse=self.calculate_ellipse,
                 orientation=self.calculate_orientation,
                 link=self.link_tracks,
-                calc_features=self.calc_features,
                 zip_tracking_file=self.zip_tracking_file,
                 track_settings=self.track_settings,
                 track_tasks=self.track_queue,
@@ -1989,7 +1986,6 @@ class ProgressDialog(QtWidgets.QDialog):
                     "max_area": self.bg_params["max_area"],
                     "ellipse": self.calculate_ellipse,
                     "orientation": self.calculate_orientation,
-                    "movement_features": self.calc_features,
                     "zip_tracking_file": self.zip_tracking_file,
                     "needs_axis_swap": False,
                 }
@@ -2689,11 +2685,6 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         if not self.track_cells.isChecked():
             self.track_orientation_property.setEnabled(False)
 
-        self.calc_features = QtWidgets.QCheckBox("Calculate movement &features")
-        self.calc_features.setChecked(prev_settings.get("tracking", {}).get("movement_features", True))
-        if not self.track_cells.isChecked():
-            self.calc_features.setEnabled(False)
-
         self.zip_tracking_file = QtWidgets.QCheckBox("&Zip file")
         self.zip_tracking_file.setChecked(prev_settings.get("tracking", {}).get("zip_tracking_file", True))
         if not self.track_cells.isChecked():
@@ -2725,7 +2716,6 @@ class FileCompressorGui(QtWidgets.QMainWindow):
 
         tracking_layout.addWidget(self.track_ellipse_property)
         tracking_layout.addWidget(self.track_orientation_property)
-        tracking_layout.addWidget(self.calc_features)
         tracking_layout.addWidget(self.zip_tracking_file)
         tracking_layout.addLayout(link_track_layout)
 
@@ -2982,13 +2972,11 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             self.track_ellipse_property.setEnabled(False)
             self.track_orientation_property.setEnabled(False)
             self.link_tracks.setEnabled(False)
-            self.calc_features.setEnabled(False)
             self.delete_compressed_files.setEnabled(True)
         else:
             self.track_ellipse_property.setEnabled(True)
             self.track_orientation_property.setEnabled(True)
             self.link_tracks.setEnabled(True)
-            self.calc_features.setEnabled(True)
             # The tracking process needs the files
             self.delete_compressed_files.setEnabled(False)
             self.delete_compressed_files.setChecked(False)
@@ -3211,7 +3199,6 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             calculate_ellipse=self.track_ellipse_property.isChecked(),
             calculate_orientation=self.track_orientation_property.isChecked(),
             link_tracks=self.link_tracks.isChecked(),
-            calc_features=self.calc_features.isChecked(),
             zip_tracking_file=self.zip_tracking_file.isChecked(),
             track_settings=self.track_settings,
             record_video=self.record_video.isChecked(),
