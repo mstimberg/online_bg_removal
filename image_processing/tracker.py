@@ -47,7 +47,7 @@ def log_rotator(source, dest):
 
 
 class Tracker(Process):
-    def __init__(self, pixel_size, min_area, max_area, target_folder, roi_size, ellipse, orientation, track_tasks, link, zip_tracking_file, calc_features, track_settings):
+    def __init__(self, pixel_size, min_area, max_area, target_folder, roi_size, features, track_tasks, link, zip_tracking_file, track_settings):
         super().__init__()
         self.pixel_size = pixel_size
         self.frame_rate = track_settings["frame_rate"]
@@ -57,13 +57,13 @@ class Tracker(Process):
         self.target_folder = target_folder
         self.roi_size = roi_size
         self.link = link
-        self.calc_features = calc_features
+        self.features = features
         self.zip_tracking_file = zip_tracking_file
         self.track_settings = track_settings
         props = ["bbox"]
-        if ellipse:
+        if features['ellipse']:
             props.append("ellipse")
-        if orientation:
+        if features['orientation']:
             props.append("orientation")
         self.regionprops = tuple(props)
         self.track_tasks = track_tasks
@@ -237,9 +237,8 @@ class Tracker(Process):
             cells_df = pd.read_csv(tracking_fname, sep="\t")
             try:
                 self.logger.info(f"Linking tracks for epoch {epoch}")
-                linked = self.link_wrapper(cells_df)
-                # Note that the filename states 1_um, since linked tracks are already scaled to µm                
-                if self.calc_features:
+                linked = self.link_wrapper(cells_df)                
+                if self.features["movement"]:
                     segments = segments_from_table(linked)
                     self.logger.debug("Calculating features over", len(segments), "segments")
                     with concurrent.futures.ProcessPoolExecutor() as executor:
@@ -257,6 +256,7 @@ class Tracker(Process):
                         linked_fname = os.path.join(track_folder, f"tracking_{epoch:07d}_linked_{self.frame_rate:.1f}_fps_1_um.tsv")
                     else:
                         linked_fname = os.path.join(track_folder, f"tracking_linked_{self.frame_rate:.1f}_fps_1_um.tsv")
+                # ↑ Note that the filename states 1_um, since linked tracks are already scaled to µm
                 if self.zip_tracking_file:
                     linked_fname += ".gz"
                 linked.to_csv(linked_fname, sep="\t", index=False, float_format="%.2f")

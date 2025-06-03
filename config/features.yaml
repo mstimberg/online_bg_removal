@@ -1,0 +1,26 @@
+# The "track" and "link" features are not configured here but available as a dependency
+# Note that for simplicity, the dependencies need to contain the transitive dependencies as well (see "track" for "movement")
+# The "movement" feature is handled with custom code in the tracker.py
+# Other features need to correspond to properties supported as regionpropos (currently: "ellipse" and "orientation")
+
+ellipse:
+  label: Calculate &ellipses
+  doc: Adds 'length' and 'width' columns to the tracking results
+  dependencies:
+    - track
+
+orientation:
+  label: Calculate &orientation
+  doc: Adds an 'orientation' column to the tracking results
+  dependencies:
+    - track
+
+movement:
+  label: Calculate movement &features
+  doc: Adds various columns for velocity and acceleration to the tracking results
+  dependencies:
+    - ellipse
+    - orientation
+    - track
+    - link
+

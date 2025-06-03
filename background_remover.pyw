@@ -1558,10 +1558,8 @@ class ProgressDialog(QtWidgets.QDialog):
         file_write_params,
         fileno_offset,
         track,
-        calculate_ellipse,
-        calculate_orientation,
+        track_features,
         link_tracks,
-        calc_features,
         zip_tracking_file,
         track_settings,
         record_video,
@@ -1607,10 +1605,8 @@ class ProgressDialog(QtWidgets.QDialog):
         self.last_ctime = None
         self.estimated_framerate = 0
         self.track = track
-        self.calculate_ellipse = calculate_ellipse
-        self.calculate_orientation = calculate_orientation
-        self.link_tracks = link_tracks
-        self.calc_features = calc_features
+        self.track_features = track_features        
+        self.link_tracks = link_tracks        
         self.zip_tracking_file = zip_tracking_file
         self.track_settings = track_settings
         self.record_video = record_video
@@ -1887,10 +1883,8 @@ class ProgressDialog(QtWidgets.QDialog):
                     self.bg_params["roi_slice"][1].stop
                     - self.bg_params["roi_slice"][1].start,
                 ),
-                ellipse=self.calculate_ellipse,
-                orientation=self.calculate_orientation,
+                features=self.track_features,
                 link=self.link_tracks,
-                calc_features=self.calc_features,
                 zip_tracking_file=self.zip_tracking_file,
                 track_settings=self.track_settings,
                 track_tasks=self.track_queue,
@@ -1996,13 +1990,11 @@ class ProgressDialog(QtWidgets.QDialog):
                     "pixel_size": self.bg_params["pixel_size"],
                     "min_area": self.bg_params["min_area"],
                     "max_area": self.bg_params["max_area"],
-                    "ellipse": self.calculate_ellipse,
-                    "orientation": self.calculate_orientation,
-                    "movement_features": self.calc_features,
                     "zip_tracking_file": self.zip_tracking_file,
                     "needs_axis_swap": False,
                 }
             )
+            settings["tracking"].update(self.track_features)
             if self.link_tracks:
                 settings["tracking"]["link_tracks"] = True
                 settings["tracking"]["package"] = self.track_settings["package"]
@@ -2431,13 +2423,22 @@ class ProgressDialog(QtWidgets.QDialog):
 class FileCompressorGui(QtWidgets.QMainWindow):
     def __init__(self, directory=None):
         super().__init__(None)
+
         # Load settings from last run
+        prev_settings = {}
         try:
             with open(os.path.join(os.path.dirname(__file__), "last_settings.yaml"), "rt") as f:
                 prev_settings = yaml.safe_load(f)
         except (FileNotFoundError, IOError, yaml.YAMLError) as ex:
-            logger.warn(f"Could not load last settings: {ex}")
-            prev_settings = {}
+            logger.warning(f"Could not load last settings: {ex}")            
+
+        self.feature_settings = {}
+        try:
+            with open(os.path.join(os.path.dirname(__file__), "config", "features.yaml"), "rt") as f:
+                self.feature_settings = yaml.safe_load(f)
+        except (FileNotFoundError, IOError, yaml.YAMLError) as ex:
+            logger.exception("Could not load feature settings")
+
         self.setWindowTitle("Background removal settings")
         self.resize(1000, 800)
         self.central_widget = QtWidgets.QWidget()
@@ -2656,7 +2657,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self.min_track_area.setValue(prev_settings.get("tracking", {}).get("min_area", DEFAULT_MIN_AREA))
         self.min_track_area.setKeyboardTracking(False)
         self.min_track_area.valueChanged.connect(self.update_pixel_size)
-        
+
         self.max_track_area = QtWidgets.QSpinBox()        
         self.max_track_area.setMaximum(1000000)
         self.max_track_area.setSingleStep(100)
@@ -2678,30 +2679,13 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self._track_labels = []
         self._track_ellipses = []
 
-        self.track_ellipse_property = QtWidgets.QCheckBox("Calculate &ellipses")
-        self.track_ellipse_property.setChecked(prev_settings.get("tracking", {}).get("ellipse", True))
-        if not self.track_cells.isChecked():
-            self.track_ellipse_property.setEnabled(False)
-
-        def update_calc_ellipses():
-            if self.track_ellipse_property.isChecked():
-                self.track_orientation_property.setChecked(True)
-                self.track_orientation_property.setEnabled(True)
-            else:
-                self.track_orientation_property.setChecked(False)
-                self.track_orientation_property.setEnabled(False)
-
-        self.track_ellipse_property.stateChanged.connect(update_calc_ellipses)
-
-        self.track_orientation_property = QtWidgets.QCheckBox("Calculate &orientation")
-        self.track_orientation_property.setChecked(prev_settings.get("tracking", {}).get("orientation", True))
-        if not self.track_cells.isChecked():
-            self.track_orientation_property.setEnabled(False)
-
-        self.calc_features = QtWidgets.QCheckBox("Calculate movement &features")
-        self.calc_features.setChecked(prev_settings.get("tracking", {}).get("movement_features", True))
-        if not self.track_cells.isChecked():
-            self.calc_features.setEnabled(False)
+        self.feature_checkboxes = {}
+        for feature, feature_desc in self.feature_settings.items():
+            cb = QtWidgets.QCheckBox(feature_desc["label"])
+            cb.setToolTip(feature_desc["doc"])            
+            cb.setChecked(prev_settings.get("tracking", {}).get(feature, True))
+            cb.stateChanged.connect(self.update_feature_checkboxes)
+            self.feature_checkboxes[feature] = cb
 
         self.zip_tracking_file = QtWidgets.QCheckBox("&Zip file")
         self.zip_tracking_file.setChecked(prev_settings.get("tracking", {}).get("zip_tracking_file", True))
@@ -2710,9 +2694,10 @@ class FileCompressorGui(QtWidgets.QMainWindow):
 
         link_track_layout = QtWidgets.QHBoxLayout()
         self.link_tracks = QtWidgets.QCheckBox("&Link tracks")
-        self.link_tracks.setChecked(True)
+        self.link_tracks.setChecked(prev_settings.get("tracking", {}).get("link_tracks", True))
         if not self.track_cells.isChecked():
             self.link_tracks.setEnabled(False)
+        self.link_tracks.stateChanged.connect(self.update_feature_checkboxes)
         link_track_layout.addWidget(self.link_tracks)
         settings_icon = self.style().standardIcon(
             QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView
@@ -2732,9 +2717,8 @@ class FileCompressorGui(QtWidgets.QMainWindow):
                 if key in prev_settings.get("tracking", {}).get(package, {}):
                     self.track_settings[package][key] = prev_settings["tracking"][package][key]
 
-        tracking_layout.addWidget(self.track_ellipse_property)
-        tracking_layout.addWidget(self.track_orientation_property)
-        tracking_layout.addWidget(self.calc_features)
+        for feature_cb in self.feature_checkboxes.values():
+            tracking_layout.addWidget(feature_cb)
         tracking_layout.addWidget(self.zip_tracking_file)
         tracking_layout.addLayout(link_track_layout)
 
@@ -2858,6 +2842,22 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             self.source_folder.setText(directory)
             self.source_folder.editingFinished.emit()
 
+    def update_feature_checkboxes(self):
+        selected = {
+            "track": self.track_cells.isChecked(),
+            "link": self.link_tracks.isChecked(),
+        }
+        for feature, feature_cb in self.feature_checkboxes.items():
+            selected[feature] = feature_cb.isChecked()
+        for feature, feature_desc in self.feature_settings.items():
+            for dep in feature_desc["dependencies"]:
+                if not selected[dep]:
+                    self.feature_checkboxes[feature].setChecked(False)
+                    self.feature_checkboxes[feature].setEnabled(False)
+                    break
+            else:  # we did not break out of the for loop – all dependencies are fulfilled
+                self.feature_checkboxes[feature].setEnabled(True)
+
     def show_track_settings(self):
         dialog = QtWidgets.QDialog(parent=self)
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok|QtWidgets.QDialogButtonBox.Cancel)
@@ -2888,7 +2888,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
 
         settings_layout.setCurrentIndex(tracking_algorithm.currentIndex())
         tracking_algorithm.activated.connect(settings_layout.setCurrentIndex)
-        
+
         dialog.layout().addWidget(tracking_algorithm)
         dialog.layout().addWidget(settings_group)
         dialog.layout().addWidget(buttons)
@@ -2897,7 +2897,6 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             self.track_settings['package'] = tracking_algorithm.currentText()
             for package, setting_widget in setting_widgets.items():
                 self.track_settings[package] = setting_widget.get_settings()
-
 
     def select_schedule(self):
         fname = QtWidgets.QFileDialog.getOpenFileName(
@@ -2988,19 +2987,14 @@ class FileCompressorGui(QtWidgets.QMainWindow):
 
     def update_tracking(self):
         if not self.track_cells.isChecked():
-            self.track_ellipse_property.setEnabled(False)
-            self.track_orientation_property.setEnabled(False)
             self.link_tracks.setEnabled(False)
-            self.calc_features.setEnabled(False)
             self.delete_compressed_files.setEnabled(True)
         else:
-            self.track_ellipse_property.setEnabled(True)
-            self.track_orientation_property.setEnabled(True)
             self.link_tracks.setEnabled(True)
-            self.calc_features.setEnabled(True)
             # The tracking process needs the files
             self.delete_compressed_files.setEnabled(False)
             self.delete_compressed_files.setChecked(False)
+        self.update_feature_checkboxes()
         self.update_tracking_preview()
 
     def update_tracking_preview(self):
@@ -3217,10 +3211,8 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             file_write_params,
             self.fileno_offset,
             track=self.track_cells.isChecked(),
-            calculate_ellipse=self.track_ellipse_property.isChecked(),
-            calculate_orientation=self.track_orientation_property.isChecked(),
+            track_features={f: f_cb.isChecked() for f, f_cb in self.feature_checkboxes.items()},            
             link_tracks=self.link_tracks.isChecked(),
-            calc_features=self.calc_features.isChecked(),
             zip_tracking_file=self.zip_tracking_file.isChecked(),
             track_settings=self.track_settings,
             record_video=self.record_video.isChecked(),
