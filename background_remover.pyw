@@ -3325,7 +3325,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         if self.dark_field:
             image = 255 - image
             background = 255 - background
-        
+
         threshold = self.threshold.value()
         subtracted = self.bg_calc.remove_background(image, background, threshold).T
         # Store zoom/pan
@@ -3469,7 +3469,8 @@ if __name__ == '__main__':
         directory = None
 
     app = QtWidgets.QApplication([])
-    # app.setStyle('windowsvista')
+    if platform.system == "Windows":
+        app.setStyle('windowsvista')
     win = FileCompressorGui(directory)
     win.show()
     if os.environ.get("TEST_SHUTDOWN_GUI", "0") == "1":
