@@ -18,6 +18,8 @@ This tool is used in our lab to record microscope images of Paramecia, remove th
   - [License](#license)
   - [Authors](#authors)
 
+> [!WARNING]
+> Only the `pixi` installation instructions and configuration files are up-to-date for using the z-prediction with Tensorflow
 
 ## Installation
 ### Qt6
@@ -53,6 +55,11 @@ or (to use GPU acceleration)
 $ pixi run -e gpu gui
 ```
 The first run will set up a conda environment and install the dependencies, later runs will re-use the existing environment.
+
+To use the z prediction (which uses keras and Tensorflow), use the `tf` (CPU) or `tf-gpu` (GPU) environment, e.g.:
+```
+$ pixi run -e tf-gpu gui
+```
 
 #### conda/mamba
 First, install `mamba` or `conda` itself if you haven't already, e.g. via the [miniforge](https://github.com/conda-forge/miniforge) distribution.
