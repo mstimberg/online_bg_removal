@@ -156,7 +156,10 @@ def determine_properties(labels, start_frame_idx, regionprops=("bbox", "ellipse"
 
     return properties
 
-def extract_properties(start_frame_idx, images, objects, indices_all, regionprops=("bbox", "ellipse", "orientation")):
+def extract_properties(start_frame_idx, images, objects, indices_all, regionprops=("bbox", "ellipse", "orientation"), nnet_features=None):
+    if nnet_features is None:
+        nnet_features = {}
+
     if "orientation" in regionprops and "ellipse" not in regionprops:
         raise ValueError("The 'orientation' property can only be calculated if 'ellipse' is requested.")
     if not len(indices_all):
@@ -178,7 +181,7 @@ def extract_properties(start_frame_idx, images, objects, indices_all, regionprop
         return results
     
 
-    if "ellipse" not in regionprops:  # For ellipses, we already create the moments
+    if "ellipse" not in regionprops:  # For ellipses, we already create the centroids
         centroid = [
             np.vstack(
                 [
@@ -226,7 +229,7 @@ def extract_properties(start_frame_idx, images, objects, indices_all, regionprop
             inertia_tensor_all = np.stack(inertia_tensor_all).reshape(-1, 4)
             a, b, b, c = inertia_tensor_all.T
             orientation = np.where(a - c == 0, np.where(b < 0, -np.pi/4, np.pi/4), np.arctan2(2 * b, a - c) / 2)
-    
+
     properties = {}
 
     # Centroid and frame information is always stored

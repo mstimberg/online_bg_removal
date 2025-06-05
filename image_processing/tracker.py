@@ -10,14 +10,17 @@ from concurrent.futures import ThreadPoolExecutor
 import concurrent
 import os
 import shutil
+import warnings
 
 import numpy as np
 try:
     import cupy as cp
     cp.cuda.runtime.getDevice()
+    xp = cp
 except Exception:
     print("Tracker: Cupy/GPU not available, falling back to CPU")
     cp = None
+    xp = np
 
 import pandas as pd
 import imageio.v3 as imageio
@@ -61,11 +64,25 @@ class Tracker(Process):
         self.zip_tracking_file = zip_tracking_file
         self.track_settings = track_settings
         props = ["bbox"]
-        if features['ellipse']:
+        if 'ellipse' in features:
             props.append("ellipse")
-        if features['orientation']:
+        if 'orientation' in features:
             props.append("orientation")
         self.regionprops = tuple(props)
+        self.nn_features = {}
+        for feature in (set(features) - set(['ellipse', 'orientation', 'movement'])):
+            try:
+                from tensorflow.keras.models import load_model
+            except ImportError:
+                warnings.warn(f"Cannot calculate feature '{feature}', tensorflow/keras import failed")
+                continue
+            try:
+                model = load_model(features[feature]["model-file"], custom_objects={'modified_mae' : None, 'mean_abs_difference_metric':None, 'combined_loss':None})
+            except Exception as ex:
+                warnings.warn(f"Could not load model for feature '{feature}': {ex}")
+                continue
+            column = features[feature]["column-name"]
+            self.nn_features[feature] = {'model': model, "column": column}
         self.track_tasks = track_tasks
         self.columns = None
         self.cuda_stream = None
@@ -196,6 +213,29 @@ class Tracker(Process):
             float_format="%.2f",
         )
 
+    def apply_model(self, without_bg, model, input_size, properties, invert=True):        
+        half_size = input_size // 2
+        slices = []
+        for r, c in zip(properties['centroid-0'], properties['centroid-1']):
+            slice = xp.ones((input_size, input_size), dtype=without_bg.dtype)*np.iinfo(without_bg.dtype).max
+            r1, r2 = max(0, int(r) - half_size), min(int(r) + half_size,  without_bg.shape[0])
+            c1, c2 = max(0, int(c) - half_size), min(int(c) + half_size,  without_bg.shape[1])
+            r_shift = input_size - (r2 - r1)
+            c_shift = input_size - (c2 - c1)
+            slice[r_shift // 2:r_shift // 2 + (r2 - r1), c_shift // 2:c_shift // 2 + (c2 - c1)] = without_bg[r1:r2, c1:c2]            
+            if invert:
+                slice = np.iinfo(without_bg.dtype).max - slice
+            slices.append(slice)
+        slice_stack = xp.stack(slices, axis=0)
+        if cp:
+            # Not that TF_FORCE_GPU_ALLOW_GROWTH needs to be set, otherwise Tensorflow will reserve all available memory
+            # And no longer leave any space for cupy
+            import tensorflow as tf
+            slice_stack_dlpack = slice_stack.toDlpack()
+            slice_stack = tf.experimental.dlpack.from_dlpack(slice_stack_dlpack)
+        return model.predict(slice_stack[..., None])
+
+
     def track_objects(self, idx, without_bg):
         # 'labels' is just passed through to avoid re-allocating memory
         self.logger.debug("Tracking objects", extra={'index': idx})
@@ -203,6 +243,11 @@ class Tracker(Process):
         images, objects, indices_all = determine_images(labels)
         self.logger.debug("Extracting properties", extra={'index': idx})
         properties = extract_properties(idx, images, objects, indices_all, self.regionprops)
+        for nn_feature, nn_data in self.nn_features.items():
+            model = nn_data["model"]
+            input_size = model.input_shape[1]
+            model_prediction = self.apply_model(without_bg, model, input_size, properties)
+            properties[nn_data["column"]] = np.squeeze(model_prediction)
         self.logger.debug("Finished tracking/determining properties", extra={'index': idx})
         return properties
 
@@ -238,9 +283,9 @@ class Tracker(Process):
             try:
                 self.logger.info(f"Linking tracks for epoch {epoch}")
                 linked = self.link_wrapper(cells_df)                
-                if self.features["movement"]:
+                if 'movement' in self.features:
                     segments = segments_from_table(linked)
-                    self.logger.debug("Calculating features over", len(segments), "segments")
+                    self.logger.debug(f"Calculating features over {len(segments)} segments")
                     with concurrent.futures.ProcessPoolExecutor() as executor:
                         segments = executor.map(calculate_features, segments)
                         segments = executor.map(mark_avoiding_reactions_from_motion, segments)

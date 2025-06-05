@@ -24,3 +24,11 @@ movement:
     - track
     - link
 
+z-prediction:
+  label: Predict &z position
+  doc: Adds a 'z' column with the predicted depth
+  dependencies:
+    - track
+  model-file: trained/best_z_simple_conv_noise_4x.tf
+  column-name: z
+  

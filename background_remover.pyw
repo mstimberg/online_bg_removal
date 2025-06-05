@@ -2683,7 +2683,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         for feature, feature_desc in self.feature_settings.items():
             cb = QtWidgets.QCheckBox(feature_desc["label"])
             cb.setToolTip(feature_desc["doc"])            
-            cb.setChecked(prev_settings.get("tracking", {}).get(feature, True))
+            cb.setChecked(feature in prev_settings.get("tracking", {}))
             cb.stateChanged.connect(self.update_feature_checkboxes)
             self.feature_checkboxes[feature] = cb
 
@@ -2694,7 +2694,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
 
         link_track_layout = QtWidgets.QHBoxLayout()
         self.link_tracks = QtWidgets.QCheckBox("&Link tracks")
-        self.link_tracks.setChecked(prev_settings.get("tracking", {}).get("link_tracks", True))
+        self.link_tracks.setChecked("link_tracks" in prev_settings.get("tracking", {}) and prev_settings["tracking"]["link_tracks"])
         if not self.track_cells.isChecked():
             self.link_tracks.setEnabled(False)
         self.link_tracks.stateChanged.connect(self.update_feature_checkboxes)
@@ -3211,7 +3211,18 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             file_write_params,
             self.fileno_offset,
             track=self.track_cells.isChecked(),
-            track_features={f: f_cb.isChecked() for f, f_cb in self.feature_checkboxes.items()},            
+            track_features={
+                f: (
+                    {
+                        "model-file": self.feature_settings[f]["model-file"],
+                        "column-name": self.feature_settings[f]["column-name"],
+                    }
+                    if "model-file" in self.feature_settings[f]
+                    else True
+                )
+                for f, f_cb in self.feature_checkboxes.items()
+                if f_cb.isChecked()
+            },
             link_tracks=self.link_tracks.isChecked(),
             zip_tracking_file=self.zip_tracking_file.isChecked(),
             track_settings=self.track_settings,
