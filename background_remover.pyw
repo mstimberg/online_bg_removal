@@ -373,7 +373,7 @@ def get_roi_slice(roi_selector):
     )
 
 
-def extract_file_number(filename):    
+def extract_file_number(filename):
     try:
         name = os.path.splitext(filename)[0]
         file_number = re.search(r"\d+$", name)
@@ -504,10 +504,11 @@ def run_wrapper(func):
 class FileWatcher(FileSystemEventHandler, QtCore.QObject):
     file_available = QtCore.Signal(str, int, float)
 
-    def __init__(self, dialog, dirname, offset):
+    def __init__(self, dialog, dirname, offset, step):
         super().__init__()
         self.dirname = dirname
         self.offset = offset
+        self.step = step
         self.signaled_files = set()
         self.dialog = dialog
 
@@ -523,6 +524,8 @@ class FileWatcher(FileSystemEventHandler, QtCore.QObject):
             return  # do not signal files twice
         self.signaled_files.add(filename)
         file_number = extract_file_number(filename) - self.offset
+        if self.step != 0:
+            file_number = (file_number + 1)//self.step
         ctime = os.path.getctime(filename)
         logger.debug(
             f"File '{filename}' became available as {file_number} (ctime: {ctime})",
@@ -1570,6 +1573,7 @@ class ProgressDialog(QtWidgets.QDialog):
         bg_params,
         file_write_params,
         fileno_offset,
+        fileno_step,
         track,
         track_features,
         link_tracks,
@@ -1626,6 +1630,7 @@ class ProgressDialog(QtWidgets.QDialog):
         self.bg_params = bg_params
         self.file_write_params = file_write_params
         self.fileno_offset = fileno_offset
+        self.fileno_step = fileno_step
         self.read_function = read_function
         self.archive_compressed_files = archive_compressed_files
 
@@ -1878,7 +1883,7 @@ class ProgressDialog(QtWidgets.QDialog):
         # self.create_overview_fig()  # TODO
         dirname = self.file_write_params["source_folder"]
         self.dir_observer = Observer()
-        self.background_file_watcher = FileWatcher(self, dirname, self.fileno_offset)
+        self.background_file_watcher = FileWatcher(self, dirname, self.fileno_offset, self.fileno_step)
         self.dir_observer.schedule(self.background_file_watcher, dirname)
         self.tracker = None
 
@@ -3084,8 +3089,48 @@ class FileCompressorGui(QtWidgets.QMainWindow):
     def proceed(self):
         delete_files = self.delete_files.isChecked()
 
+        if len(self.filenames) <= 1:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Insufficient files",
+                "Need more than file to start processing",
+            )
+            return
+
+        # Check whether the filenames contain numbers without gaps
+        try:
+            indices = np.array([extract_file_number(f) for f in sorted(self.filenames)])
+        except TypeError:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Filenames with invalid numbers",
+                "Cannot extract a number from every filename",
+            )
+            return
+
+        diffs = np.diff(indices[:-1])
+        unique_diffs = np.unique(diffs)
+        if len(unique_diffs) == 1 and unique_diffs[0] == 1:
+            index_step = 0  # All good
+        elif len(unique_diffs) > 1:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Filenames with varying gaps",
+                "The filename numbers are not consecutive, and the gaps are not consistent",
+            )
+            return
+        else:  # consistent gaps (but not consecutive)
+            index_step = unique_diffs[0]
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                "Non-consecutive filenames",
+                f"The filename numbers are not consecutive, but follow each other with a gap of {index_step}. Continue by assuming this for all files?",
+            )
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+            
         # Will open the progress dialog
-        self.process_folder(delete_files)
+        self.process_folder(delete_files, index_step)
 
     def automatic_threshold(self):
         active = self.automatic_threshold_selected.isChecked()
@@ -3160,7 +3205,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         )
         self.background_frames.setMaximum(len(self.filenames))
 
-    def process_folder(self, delete_files=False):
+    def process_folder(self, delete_files=False, index_step=0):
         target_folder = self.target_folder.text()
         if os.path.exists(target_folder) and len(os.listdir(target_folder)) > 0:
             QtWidgets.QMessageBox.warning(
@@ -3228,6 +3273,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             background_params,
             file_write_params,
             self.fileno_offset,
+            index_step,
             track=self.track_cells.isChecked(),
             track_features={
                 f: (
