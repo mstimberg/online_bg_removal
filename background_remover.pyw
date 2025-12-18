@@ -3,21 +3,10 @@ Script that watches a folder of files, removes the background and saves them as 
 folder). The input file names need to have filenames ending in consecutive numbers.
 """
 
-from image_processing.regionprops import (
-    determine_labels,
-    determine_images,
-    extract_properties,
-)
-from image_processing.tracker import Tracker
-
-from dataclasses import dataclass
-from datetime import datetime
 import glob
 import gzip
 import io
 import logging
-from logging.handlers import RotatingFileHandler
-from multiprocessing import JoinableQueue, set_start_method
 import os
 import platform
 import queue
@@ -27,23 +16,34 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass
+from datetime import datetime
+from logging.handlers import RotatingFileHandler
+from multiprocessing import JoinableQueue, set_start_method
 
-import psutil
-import numpy as np
 import imageio
 import imageio.plugins.ffmpeg as ffmpeg_plugin
+import numpy as np
 import pandas as pd
-import PySide6.QtWidgets as QtWidgets
-import PySide6.QtCore as QtCore
-from PySide6.QtCore import Qt
-import PySide6.QtGui as QtGui
+import psutil
 import pyqtgraph as pg
+import PySide6.QtCore as QtCore
+import PySide6.QtGui as QtGui
+import PySide6.QtWidgets as QtWidgets
 import skimage
 import tifffile
-from pyqtgraph import RectROI
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
 import yaml
+from pyqtgraph import RectROI
+from PySide6.QtCore import Qt
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+
+from image_processing.regionprops import (
+    determine_images,
+    determine_labels,
+    extract_properties,
+)
+from image_processing.tracker import Tracker
 
 DEFAULT_MIN_AREA = 400
 DEFAULT_MAX_AREA = 12500
@@ -307,6 +307,13 @@ def read_image_libtiff(path):
     return frame
 
 
+def get_image_fnames(dirname):
+    return sorted(
+        glob.glob(os.path.join(dirname, "*.tiff"))
+        + glob.glob(os.path.join(dirname, "*.tif"))
+        + glob.glob(os.path.join(dirname, "*.png"))
+    )
+
 read_functions = {
     "tifffile": read_image_tifffile,
     "libtiff": read_image_libtiff,
@@ -366,10 +373,13 @@ def get_roi_slice(roi_selector):
     )
 
 
-def extract_file_number(filename):
-    file_number = re.search(r"\d+\.tiff", filename)
-    if file_number:
-        file_number = int(file_number.group()[:-5])
+def extract_file_number(filename):    
+    try:
+        name = os.path.splitext(filename)[0]
+        file_number = re.search(r"\d+$", name)
+        file_number = int(file_number.group()) if file_number else None
+    except (ValueError, TypeError):
+        file_number = None
     return file_number
 
 
@@ -503,7 +513,7 @@ class FileWatcher(FileSystemEventHandler, QtCore.QObject):
 
     def initial_run(self):
         logger.info("Going through existing files")
-        filenames = sorted(glob.glob(os.path.join(self.dirname, '*.tiff')))
+        filenames = get_image_fnames(self.dirname)
 
         for filename in filenames:
             self.handle_file(filename)
@@ -526,7 +536,7 @@ class FileWatcher(FileSystemEventHandler, QtCore.QObject):
 
     def on_created(self, event):
         filename = event.src_path
-        if not filename.lower().endswith(".tiff"):
+        if os.path.splitext(filename)[1] not in ['.tiff', '.tif', '.png']:
             return
         self.handle_file(filename)
 
@@ -645,9 +655,12 @@ class FileReader(QtCore.QRunnable):
         fail_counter = 0
         while True:
             try:
-                if not verify_tiff(self.filename):
-                    raise ValueError("Possibly truncated file")
-                frame = self.read_function(self.filename)
+                if os.path.splitext(self.filename)[1] in ['.tiff', '.tif']:
+                    if not verify_tiff(self.filename):
+                        raise ValueError("Possibly truncated file")                
+                    frame = self.read_function(self.filename)
+                else:
+                    frame = read_image_imageio(self.filename)
                 if frame.size == 0:
                     raise ValueError("Empty frame")
                 logger.debug(
@@ -1185,7 +1198,7 @@ class BackgroundCalculator:
         """
         if n_frames is None:
             n_frames = self.chunk_size
-        frames = self.buffer[:n_frames]
+        frames = self.buffer[:n_frames]        
         background_inv = xp.clip(
             xp.invert(self.background).astype("int16") + threshold, 0, 255
         ).astype("uint8")
@@ -3088,7 +3101,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         dirname = self.source_folder.text()
         n_frames = self.background_frames.value()
 
-        self.filenames = sorted(glob.glob(os.path.join(dirname, "*.tiff")))
+        self.filenames = get_image_fnames(dirname)
         if len(self.filenames) == 0:
             return
 
@@ -3104,8 +3117,10 @@ class FileCompressorGui(QtWidgets.QMainWindow):
 
         # get first frame to determine size
         full_path = os.path.join(dirname, self.filenames[0])
-
-        frame = read_function(full_path)
+        if os.path.splitext(full_path)[1] in [".tiff", ".tif"]:
+            frame = read_function(full_path)
+        else:
+            frame = read_image_imageio(full_path)
         y, x = frame.shape
 
         self.bg_calc = InitialBackgroundCalculator(x, y)
@@ -3116,7 +3131,10 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         for idx, full_path in enumerate(self.filenames[:n_frames]):
             total_size += os.path.getsize(full_path)
             self.update_task(idx)
-            frame = read_function(full_path)
+            if os.path.splitext(full_path)[1] in [".tiff", ".tif"]:
+                frame = read_function(full_path)
+            else:
+                frame = read_image_imageio(full_path)
             self.bg_calc.add_frame(frame)
 
         self.finish_task()
@@ -3135,7 +3153,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
 
     def update_file_number(self):
         dirname = self.source_folder.text()
-        self.filenames = sorted(glob.glob(os.path.join(dirname, "*.tiff")))
+        self.filenames = get_image_fnames(dirname)
         filesize = human_filesize(self.source_file_size)
         self.files_label.setText(
             f"<b>{len(self.filenames)}</b> images in folder (<b>{filesize}</b>/file)"
@@ -3250,7 +3268,10 @@ class FileCompressorGui(QtWidgets.QMainWindow):
                 self.filenames[self.bg_calc._n_frames : n_frames]
             ):
                 self.update_task(idx)
-                frame = read_function(full_path)
+                if os.path.splitext(full_path)[1] in [".tiff", ".tif"]:
+                    frame = read_function(full_path)
+                else:
+                    frame = read_image_imageio(full_path)
                 self.bg_calc.add_frame(frame)
             self.finish_task()
         self.update_source_images()
@@ -3405,7 +3426,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             return
         self.bg_calc = None  # Make sure old results are no longer around
         self.target_folder.setText(os.path.join(folder, "background_removed"))
-        filenames = sorted(glob.glob(os.path.join(folder, "*.tiff")))
+        filenames = get_image_fnames(folder)
         n_files = len(filenames)
         self.background_frames.setMaximum(n_files)
         if self.background_frames.value() == 0:
