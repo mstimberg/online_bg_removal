@@ -3,21 +3,10 @@ Script that watches a folder of files, removes the background and saves them as 
 folder). The input file names need to have filenames ending in consecutive numbers.
 """
 
-from image_processing.regionprops import (
-    determine_labels,
-    determine_images,
-    extract_properties,
-)
-from image_processing.tracker import Tracker
-
-from dataclasses import dataclass
-from datetime import datetime
 import glob
 import gzip
 import io
 import logging
-from logging.handlers import RotatingFileHandler
-from multiprocessing import JoinableQueue, set_start_method
 import os
 import platform
 import queue
@@ -27,23 +16,34 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass
+from datetime import datetime
+from logging.handlers import RotatingFileHandler
+from multiprocessing import JoinableQueue, set_start_method
 
-import psutil
-import numpy as np
 import imageio
 import imageio.plugins.ffmpeg as ffmpeg_plugin
+import numpy as np
 import pandas as pd
-import PySide6.QtWidgets as QtWidgets
-import PySide6.QtCore as QtCore
-from PySide6.QtCore import Qt
-import PySide6.QtGui as QtGui
+import psutil
 import pyqtgraph as pg
+import PySide6.QtCore as QtCore
+import PySide6.QtGui as QtGui
+import PySide6.QtWidgets as QtWidgets
 import skimage
 import tifffile
-from pyqtgraph import RectROI
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
 import yaml
+from pyqtgraph import RectROI
+from PySide6.QtCore import Qt
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+
+from image_processing.regionprops import (
+    determine_images,
+    determine_labels,
+    extract_properties,
+)
+from image_processing.tracker import Tracker
 
 DEFAULT_MIN_AREA = 400
 DEFAULT_MAX_AREA = 12500
@@ -307,6 +307,13 @@ def read_image_libtiff(path):
     return frame
 
 
+def get_image_fnames(dirname):
+    return sorted(
+        glob.glob(os.path.join(dirname, "*.tiff"))
+        + glob.glob(os.path.join(dirname, "*.tif"))
+        + glob.glob(os.path.join(dirname, "*.png"))
+    )
+
 read_functions = {
     "tifffile": read_image_tifffile,
     "libtiff": read_image_libtiff,
@@ -367,9 +374,12 @@ def get_roi_slice(roi_selector):
 
 
 def extract_file_number(filename):
-    file_number = re.search(r"\d+\.tiff", filename)
-    if file_number:
-        file_number = int(file_number.group()[:-5])
+    try:
+        name = os.path.splitext(filename)[0]
+        file_number = re.search(r"\d+$", name)
+        file_number = int(file_number.group()) if file_number else None
+    except (ValueError, TypeError):
+        file_number = None
     return file_number
 
 
@@ -494,16 +504,17 @@ def run_wrapper(func):
 class FileWatcher(FileSystemEventHandler, QtCore.QObject):
     file_available = QtCore.Signal(str, int, float)
 
-    def __init__(self, dialog, dirname, offset):
+    def __init__(self, dialog, dirname, offset, step):
         super().__init__()
         self.dirname = dirname
         self.offset = offset
+        self.step = step
         self.signaled_files = set()
         self.dialog = dialog
 
     def initial_run(self):
         logger.info("Going through existing files")
-        filenames = sorted(glob.glob(os.path.join(self.dirname, '*.tiff')))
+        filenames = get_image_fnames(self.dirname)
 
         for filename in filenames:
             self.handle_file(filename)
@@ -513,6 +524,8 @@ class FileWatcher(FileSystemEventHandler, QtCore.QObject):
             return  # do not signal files twice
         self.signaled_files.add(filename)
         file_number = extract_file_number(filename) - self.offset
+        if self.step != 0:
+            file_number = (file_number + 1)//self.step
         ctime = os.path.getctime(filename)
         logger.debug(
             f"File '{filename}' became available as {file_number} (ctime: {ctime})",
@@ -526,7 +539,7 @@ class FileWatcher(FileSystemEventHandler, QtCore.QObject):
 
     def on_created(self, event):
         filename = event.src_path
-        if not filename.lower().endswith(".tiff"):
+        if os.path.splitext(filename)[1] not in ['.tiff', '.tif', '.png']:
             return
         self.handle_file(filename)
 
@@ -645,9 +658,12 @@ class FileReader(QtCore.QRunnable):
         fail_counter = 0
         while True:
             try:
-                if not verify_tiff(self.filename):
-                    raise ValueError("Possibly truncated file")
-                frame = self.read_function(self.filename)
+                if os.path.splitext(self.filename)[1] in ['.tiff', '.tif']:
+                    if not verify_tiff(self.filename):
+                        raise ValueError("Possibly truncated file")                
+                    frame = self.read_function(self.filename)
+                else:
+                    frame = read_image_imageio(self.filename)
                 if frame.size == 0:
                     raise ValueError("Empty frame")
                 logger.debug(
@@ -1185,7 +1201,7 @@ class BackgroundCalculator:
         """
         if n_frames is None:
             n_frames = self.chunk_size
-        frames = self.buffer[:n_frames]
+        frames = self.buffer[:n_frames]        
         background_inv = xp.clip(
             xp.invert(self.background).astype("int16") + threshold, 0, 255
         ).astype("uint8")
@@ -1557,6 +1573,7 @@ class ProgressDialog(QtWidgets.QDialog):
         bg_params,
         file_write_params,
         fileno_offset,
+        fileno_step,
         track,
         track_features,
         link_tracks,
@@ -1613,6 +1630,7 @@ class ProgressDialog(QtWidgets.QDialog):
         self.bg_params = bg_params
         self.file_write_params = file_write_params
         self.fileno_offset = fileno_offset
+        self.fileno_step = fileno_step
         self.read_function = read_function
         self.archive_compressed_files = archive_compressed_files
 
@@ -1865,7 +1883,7 @@ class ProgressDialog(QtWidgets.QDialog):
         # self.create_overview_fig()  # TODO
         dirname = self.file_write_params["source_folder"]
         self.dir_observer = Observer()
-        self.background_file_watcher = FileWatcher(self, dirname, self.fileno_offset)
+        self.background_file_watcher = FileWatcher(self, dirname, self.fileno_offset, self.fileno_step)
         self.dir_observer.schedule(self.background_file_watcher, dirname)
         self.tracker = None
 
@@ -2355,10 +2373,12 @@ class ProgressDialog(QtWidgets.QDialog):
                 logger.debug("Would stop, but auto stop is disabled")
 
         # Update progress bars with current tasks in queue
-        tasks = [
-            getattr(getattr(q, "_unfinished_tasks", None), "get_value", q.qsize)()
-            for q in self.queues.values()
-        ]
+        tasks = []
+        for q in self.queues.values():
+            try:
+                tasks.append(q._unfinished_tasks.get_value())
+            except (AttributeError, NotImplementedError):
+                tasks.append(q.qsize())
         max_tasks = max(tasks)
         if max_tasks == 0:
             max_tasks = 1
@@ -2466,7 +2486,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
 
         self.subtracted_preview = pg.ImageView()
         self.subtracted_preview.getImageItem().getViewBox().sigRangeChanged.connect(
-            self.update_ellipses
+            self.update_min_max_ellipses
         )
         self.subtracted_preview.ui.roiBtn.hide()
         self.subtracted_preview.ui.menuBtn.hide()
@@ -2677,6 +2697,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         tracking_layout.addWidget(self.track_cells)
 
         self._track_labels = []
+        self._track_min_max_area = []
         self._track_ellipses = []
 
         self.feature_checkboxes = {}
@@ -2857,6 +2878,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
                     break
             else:  # we did not break out of the for loop – all dependencies are fulfilled
                 self.feature_checkboxes[feature].setEnabled(True)
+        self.update_tracking_preview()
 
     def show_track_settings(self):
         dialog = QtWidgets.QDialog(parent=self)
@@ -2945,14 +2967,14 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self.update_target_file_size()
         self.update_tracking_preview()
 
-    def update_ellipses(self):
-        if not len(self._track_ellipses):
+    def update_min_max_ellipses(self):
+        if not len(self._track_min_max_area):
             return
         view_box = self.subtracted_preview.getImageItem().getViewBox()
         view_range = view_box.state["viewRange"]
         offset_x = view_range[0][1] - (view_range[0][1] - view_range[0][0]) / 2
         offset_y = view_range[1][1] - (view_range[1][1] - view_range[1][0]) / 2
-        min_ellipse, max_ellipse = self._track_ellipses
+        min_ellipse, max_ellipse = self._track_min_max_area
         max_ellipse.setRect(
             offset_x - max_ellipse.rect().width() / 2,
             offset_y - max_ellipse.rect().height() / 2,
@@ -3000,9 +3022,12 @@ class FileCompressorGui(QtWidgets.QMainWindow):
     def update_tracking_preview(self):
         for label in self._track_labels:
             self.subtracted_preview.getView().removeItem(label)
+        for ellipses in self._track_min_max_area:
+            self.subtracted_preview.getView().removeItem(ellipses)
         for ellipses in self._track_ellipses:
             self.subtracted_preview.getView().removeItem(ellipses)
         self._track_labels.clear()
+        self._track_min_max_area.clear()
         self._track_ellipses.clear()
         self.track_cells.setText("Track cells")
         if (
@@ -3043,16 +3068,22 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             )
             min_area_ellipse.setPen(pg.mkPen(pen_color, width=2))
             self.subtracted_preview.getView().addItem(min_area_ellipse)
-            self._track_ellipses = [min_area_ellipse, max_area_ellipse]
+            self._track_min_max_area = [min_area_ellipse, max_area_ellipse]
             labels = determine_labels(image, min_area_pixels, max_area_pixels)
             images, objects, indices_all = determine_images(labels)
+            if self.feature_checkboxes["ellipse"].isChecked():
+                props = ("ellipse", "orientation")
+            else:
+                props = ()
             properties = extract_properties(
-                0, images, objects, indices_all, regionprops=()
+                0, images, objects, indices_all, regionprops=props
             )
 
             if not len(properties):
                 self.track_cells.setText("Track cells (no cells found)")
                 return
+
+            # Show text labels
             labeled = sorted(
                 [
                     (c, r)
@@ -3066,13 +3097,72 @@ class FileCompressorGui(QtWidgets.QMainWindow):
                 label.setPos(y, x)
                 self._track_labels.append(label)
                 self.subtracted_preview.getView().addItem(label)
+
+            # Show ellipses (if available)
+            if self.feature_checkboxes["ellipse"].isChecked():
+                pen_color = QtGui.QColor("#C80000")
+                pen_color.setAlpha(200)
+                for x, y, l, w, a in zip(
+                    properties["centroid-0"],
+                    properties["centroid-1"],
+                    properties["minor_axis_length"],
+                    properties["major_axis_length"],
+                    properties["orientation"],
+                ):
+                    ellipse = QtWidgets.QGraphicsEllipseItem(x - l / 2, y - w / 2, l, w)
+                    ellipse.setTransformOriginPoint(x, y)
+                    ellipse.setRotation(np.degrees(a))
+                    ellipse.setPen(pg.mkPen(pen_color, width=1))
+                    self.subtracted_preview.getView().addItem(ellipse)
+                    self._track_ellipses.append(ellipse)
+
             self.track_cells.setText(f"Track cells ({len(labeled)} cells found)")
 
     def proceed(self):
         delete_files = self.delete_files.isChecked()
 
+        if len(self.filenames) <= 1:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Insufficient files",
+                "Need more than file to start processing",
+            )
+            return
+
+        # Check whether the filenames contain numbers without gaps
+        try:
+            indices = np.array([extract_file_number(f) for f in sorted(self.filenames)])
+        except TypeError:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Filenames with invalid numbers",
+                "Cannot extract a number from every filename",
+            )
+            return
+
+        diffs = np.diff(indices[:-1])
+        unique_diffs = np.unique(diffs)
+        if len(unique_diffs) == 1 and unique_diffs[0] == 1:
+            index_step = 0  # All good
+        elif len(unique_diffs) > 1:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Filenames with varying gaps",
+                "The filename numbers are not consecutive, and the gaps are not consistent",
+            )
+            return
+        else:  # consistent gaps (but not consecutive)
+            index_step = unique_diffs[0]
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                "Non-consecutive filenames",
+                f"The filename numbers are not consecutive, but follow each other with a gap of {index_step}. Continue by assuming this for all files?",
+            )
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+
         # Will open the progress dialog
-        self.process_folder(delete_files)
+        self.process_folder(delete_files, index_step)
 
     def automatic_threshold(self):
         active = self.automatic_threshold_selected.isChecked()
@@ -3088,7 +3178,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         dirname = self.source_folder.text()
         n_frames = self.background_frames.value()
 
-        self.filenames = sorted(glob.glob(os.path.join(dirname, "*.tiff")))
+        self.filenames = get_image_fnames(dirname)
         if len(self.filenames) == 0:
             return
 
@@ -3104,8 +3194,10 @@ class FileCompressorGui(QtWidgets.QMainWindow):
 
         # get first frame to determine size
         full_path = os.path.join(dirname, self.filenames[0])
-
-        frame = read_function(full_path)
+        if os.path.splitext(full_path)[1] in [".tiff", ".tif"]:
+            frame = read_function(full_path)
+        else:
+            frame = read_image_imageio(full_path)
         y, x = frame.shape
 
         self.bg_calc = InitialBackgroundCalculator(x, y)
@@ -3116,7 +3208,10 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         for idx, full_path in enumerate(self.filenames[:n_frames]):
             total_size += os.path.getsize(full_path)
             self.update_task(idx)
-            frame = read_function(full_path)
+            if os.path.splitext(full_path)[1] in [".tiff", ".tif"]:
+                frame = read_function(full_path)
+            else:
+                frame = read_image_imageio(full_path)
             self.bg_calc.add_frame(frame)
 
         self.finish_task()
@@ -3135,14 +3230,14 @@ class FileCompressorGui(QtWidgets.QMainWindow):
 
     def update_file_number(self):
         dirname = self.source_folder.text()
-        self.filenames = sorted(glob.glob(os.path.join(dirname, "*.tiff")))
+        self.filenames = get_image_fnames(dirname)
         filesize = human_filesize(self.source_file_size)
         self.files_label.setText(
             f"<b>{len(self.filenames)}</b> images in folder (<b>{filesize}</b>/file)"
         )
         self.background_frames.setMaximum(len(self.filenames))
 
-    def process_folder(self, delete_files=False):
+    def process_folder(self, delete_files=False, index_step=0):
         target_folder = self.target_folder.text()
         if os.path.exists(target_folder) and len(os.listdir(target_folder)) > 0:
             QtWidgets.QMessageBox.warning(
@@ -3210,6 +3305,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             background_params,
             file_write_params,
             self.fileno_offset,
+            index_step,
             track=self.track_cells.isChecked(),
             track_features={
                 f: (
@@ -3250,7 +3346,10 @@ class FileCompressorGui(QtWidgets.QMainWindow):
                 self.filenames[self.bg_calc._n_frames : n_frames]
             ):
                 self.update_task(idx)
-                frame = read_function(full_path)
+                if os.path.splitext(full_path)[1] in [".tiff", ".tif"]:
+                    frame = read_function(full_path)
+                else:
+                    frame = read_image_imageio(full_path)
                 self.bg_calc.add_frame(frame)
             self.finish_task()
         self.update_source_images()
@@ -3355,6 +3454,10 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             if not self.automatic_threshold_selected.isChecked():
                 self.threshold.setValue(threshold)
 
+        # Update tracked cells
+        if self.track_cells.isChecked():
+            self.update_tracking_preview()
+
     def update_target_file_size(self):
         subtracted = np.clip(
             np.asarray(self.subtracted_preview.image, dtype=np.uint8),
@@ -3405,7 +3508,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             return
         self.bg_calc = None  # Make sure old results are no longer around
         self.target_folder.setText(os.path.join(folder, "background_removed"))
-        filenames = sorted(glob.glob(os.path.join(folder, "*.tiff")))
+        filenames = get_image_fnames(folder)
         n_files = len(filenames)
         self.background_frames.setMaximum(n_files)
         if self.background_frames.value() == 0:
