@@ -2373,10 +2373,12 @@ class ProgressDialog(QtWidgets.QDialog):
                 logger.debug("Would stop, but auto stop is disabled")
 
         # Update progress bars with current tasks in queue
-        tasks = [
-            getattr(getattr(q, "_unfinished_tasks", None), "get_value", q.qsize)()
-            for q in self.queues.values()
-        ]
+        tasks = []
+        for q in self.queues.values():
+            try:
+                tasks.append(q._unfinished_tasks.get_value())
+            except (AttributeError, NotImplementedError):
+                tasks.append(q.qsize())
         max_tasks = max(tasks)
         if max_tasks == 0:
             max_tasks = 1
