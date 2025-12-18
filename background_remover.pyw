@@ -2484,7 +2484,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
 
         self.subtracted_preview = pg.ImageView()
         self.subtracted_preview.getImageItem().getViewBox().sigRangeChanged.connect(
-            self.update_ellipses
+            self.update_min_max_ellipses
         )
         self.subtracted_preview.ui.roiBtn.hide()
         self.subtracted_preview.ui.menuBtn.hide()
@@ -2695,6 +2695,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         tracking_layout.addWidget(self.track_cells)
 
         self._track_labels = []
+        self._track_min_max_area = []
         self._track_ellipses = []
 
         self.feature_checkboxes = {}
@@ -2875,6 +2876,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
                     break
             else:  # we did not break out of the for loop – all dependencies are fulfilled
                 self.feature_checkboxes[feature].setEnabled(True)
+        self.update_tracking_preview()
 
     def show_track_settings(self):
         dialog = QtWidgets.QDialog(parent=self)
@@ -2963,14 +2965,14 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self.update_target_file_size()
         self.update_tracking_preview()
 
-    def update_ellipses(self):
-        if not len(self._track_ellipses):
+    def update_min_max_ellipses(self):
+        if not len(self._track_min_max_area):
             return
         view_box = self.subtracted_preview.getImageItem().getViewBox()
         view_range = view_box.state["viewRange"]
         offset_x = view_range[0][1] - (view_range[0][1] - view_range[0][0]) / 2
         offset_y = view_range[1][1] - (view_range[1][1] - view_range[1][0]) / 2
-        min_ellipse, max_ellipse = self._track_ellipses
+        min_ellipse, max_ellipse = self._track_min_max_area
         max_ellipse.setRect(
             offset_x - max_ellipse.rect().width() / 2,
             offset_y - max_ellipse.rect().height() / 2,
@@ -3018,9 +3020,12 @@ class FileCompressorGui(QtWidgets.QMainWindow):
     def update_tracking_preview(self):
         for label in self._track_labels:
             self.subtracted_preview.getView().removeItem(label)
+        for ellipses in self._track_min_max_area:
+            self.subtracted_preview.getView().removeItem(ellipses)
         for ellipses in self._track_ellipses:
             self.subtracted_preview.getView().removeItem(ellipses)
         self._track_labels.clear()
+        self._track_min_max_area.clear()
         self._track_ellipses.clear()
         self.track_cells.setText("Track cells")
         if (
@@ -3061,16 +3066,22 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             )
             min_area_ellipse.setPen(pg.mkPen(pen_color, width=2))
             self.subtracted_preview.getView().addItem(min_area_ellipse)
-            self._track_ellipses = [min_area_ellipse, max_area_ellipse]
+            self._track_min_max_area = [min_area_ellipse, max_area_ellipse]
             labels = determine_labels(image, min_area_pixels, max_area_pixels)
             images, objects, indices_all = determine_images(labels)
+            if self.feature_checkboxes["ellipse"].isChecked():
+                props = ("ellipse", "orientation")
+            else:
+                props = ()
             properties = extract_properties(
-                0, images, objects, indices_all, regionprops=()
+                0, images, objects, indices_all, regionprops=props
             )
 
             if not len(properties):
                 self.track_cells.setText("Track cells (no cells found)")
                 return
+
+            # Show text labels
             labeled = sorted(
                 [
                     (c, r)
@@ -3084,6 +3095,25 @@ class FileCompressorGui(QtWidgets.QMainWindow):
                 label.setPos(y, x)
                 self._track_labels.append(label)
                 self.subtracted_preview.getView().addItem(label)
+
+            # Show ellipses (if available)
+            if self.feature_checkboxes["ellipse"].isChecked():
+                pen_color = QtGui.QColor("#C80000")
+                pen_color.setAlpha(200)
+                for x, y, l, w, a in zip(
+                    properties["centroid-0"],
+                    properties["centroid-1"],
+                    properties["minor_axis_length"],
+                    properties["major_axis_length"],
+                    properties["orientation"],
+                ):
+                    ellipse = QtWidgets.QGraphicsEllipseItem(x - l / 2, y - w / 2, l, w)
+                    ellipse.setTransformOriginPoint(x, y)
+                    ellipse.setRotation(np.degrees(a))
+                    ellipse.setPen(pg.mkPen(pen_color, width=1))
+                    self.subtracted_preview.getView().addItem(ellipse)
+                    self._track_ellipses.append(ellipse)
+
             self.track_cells.setText(f"Track cells ({len(labeled)} cells found)")
 
     def proceed(self):
@@ -3128,7 +3158,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             )
             if answer != QtWidgets.QMessageBox.StandardButton.Yes:
                 return
-            
+
         # Will open the progress dialog
         self.process_folder(delete_files, index_step)
 
@@ -3421,7 +3451,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             view_box.setState(state)
             if not self.automatic_threshold_selected.isChecked():
                 self.threshold.setValue(threshold)
-        
+
         # Update tracked cells
         if self.track_cells.isChecked():
             self.update_tracking_preview()
