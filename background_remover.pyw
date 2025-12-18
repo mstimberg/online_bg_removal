@@ -3421,6 +3421,10 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             view_box.setState(state)
             if not self.automatic_threshold_selected.isChecked():
                 self.threshold.setValue(threshold)
+        
+        # Update tracked cells
+        if self.track_cells.isChecked():
+            self.update_tracking_preview()
 
     def update_target_file_size(self):
         subtracted = np.clip(
