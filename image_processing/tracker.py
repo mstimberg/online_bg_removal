@@ -206,6 +206,7 @@ class Tracker(Process):
         fname = os.path.join(track_folder, tracking_fname)
         df.to_csv(
             fname,
+            columns=self.columns,
             mode="w",
             sep="\t",
             index=False,

@@ -174,10 +174,10 @@ def extract_properties(start_frame_idx, images, objects, indices_all, regionprop
             results["bbox-2"] = np.array([], dtype=int)
             results["bbox-3"] = np.array([], dtype=int)
         if "ellipse" in regionprops:
-            if 'orientation' in regionprops:
-                results["orientation"] = np.array([], dtype=float)
             results["minor_axis_length"] = np.array([], dtype=float)
             results["major_axis_length"] = np.array([], dtype=float)
+            if 'orientation' in regionprops:
+                results["orientation"] = np.array([], dtype=float)            
         return results
     
 
