@@ -167,7 +167,10 @@ class Tracker(Process):
                     max_idx = max(task['idx'], max_idx)
 
         if not self.track_tasks.empty():
-            self.logger.error(f"There are still {self.track_tasks.qsize()} tasks in the queue")
+            try:
+                self.logger.error(f"There are still {self.track_tasks.qsize()} tasks in the queue")
+            except NotImplementedError:
+                self.logger.error(f"There are still tasks in the queue")
 
         self.logger.debug(
             f"Processed {processed} frames in {time.time() - self.start_time:.2f} seconds, i.e. {processed / (time.time() - self.start_time):.1f} frames per second"

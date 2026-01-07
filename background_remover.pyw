@@ -572,10 +572,13 @@ class FileReaderThread(QtCore.QThread):
         while True:
             idx, task = self.read_queue.get()
             if task["type"] == "stop":
-                logger.info(
-                    "Stopping file reader thread, remaining tasks in queue: "
-                    + str(self.read_queue.qsize())
-                )
+                try:
+                    logger.info(
+                        "Stopping file reader thread, remaining tasks in queue: "
+                        + str(self.read_queue.qsize())
+                    )
+                except NotImplementedError:  # on macOS
+                    logger.info("Stopping file reader thread.")
                 self.read_queue.task_done(index=idx, measure=False)
                 break
 
@@ -1510,9 +1513,14 @@ class QueueWithSignals(QtCore.QObject):
         self.lock.acquire()
         self.counter += 1
         self.lock.release()
-        logger.debug(
-            f"{self._name}: Adding task to queue with size {self._queue.qsize()}, counter: {self.counter}"
-        )
+        try:
+            logger.debug(
+                f"{self._name}: Adding task to queue with size {self._queue.qsize()}, counter: {self.counter}"
+            )
+        except NotImplementedError:  # on macOS
+            logger.debug(
+                f"{self._name}: Adding task to queue, counter: {self.counter}"
+            )
         self._queue.put(*args, **kwds)
         self.task_added.emit(self.counter)
 
@@ -2378,13 +2386,19 @@ class ProgressDialog(QtWidgets.QDialog):
             try:
                 tasks.append(q._unfinished_tasks.get_value())
             except (AttributeError, NotImplementedError):
-                tasks.append(q.qsize())
+                try:
+                    tasks.append(q.qsize())
+                except NotImplementedError:  # on macOS
+                    tasks.append(-1)
         max_tasks = max(tasks)
         if max_tasks == 0:
             max_tasks = 1
         for n_tasks, pb in zip(tasks, self.progress_bars.values()):
-            pb.setMaximum(max_tasks)
-            pb.setValue(n_tasks)
+            if n_tasks == -1:
+                pb.setMaximum(0)
+            else:
+                pb.setMaximum(max_tasks)
+                pb.setValue(n_tasks)
 
         # Update FPS
         if self.available_files > self._last_available_files:
@@ -2807,7 +2821,6 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             self.delete_compressed_files.setEnabled(self.record_video.isChecked())
             if not self.record_video.isChecked():
                 self.delete_compressed_files.setChecked(False)
-
         self.record_video.stateChanged.connect(switch_delete_compressed_files)
         layout = QtWidgets.QHBoxLayout()
         fps_label = QtWidgets.QLabel("F&PS: ")
