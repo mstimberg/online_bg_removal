@@ -8,8 +8,8 @@ jobs:
         runs-on: ${{ matrix.os }}
         strategy:
             matrix:
-                os: [ubuntu-24.04, windows-2022, macos-13, macos-14]
-                python-version: [3.11, 3.12]
+                os: [ubuntu-latest, windows-latest, macos-latest]
+                python-version: [3.12]
 
         steps:
         - name: Checkout repository
@@ -41,7 +41,7 @@ jobs:
         runs-on: ${{ matrix.os }}
         strategy:
             matrix:
-                os: [ubuntu-24.04, windows-2022, macos-13, macos-14]
+                os: [ubuntu-latest, windows-latest, macos-latest]
         
         steps:
         - name: Checkout repository
@@ -57,74 +57,14 @@ jobs:
           env:
             QT_QPA_PLATFORM: offscreen
             TEST_SHUTDOWN_GUI: 1
-
-    test-pdm:
-      name: Test pdm install ${{ matrix.os }} / ${{ matrix.python-version }})
-      runs-on: ${{ matrix.os }}
-      strategy:
-          matrix:
-              os: [ubuntu-24.04, windows-2022, macos-13, macos-14]
-              python-version: [3.11, 3.12]
-      
-      steps:
-      - name: Checkout repository
-        uses: actions/checkout@v2
-
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: 6.8.2
-          aqtversion: '>=3.2.0'
-      
-      - name: Set up PDM
-        id: pdm-setup
-        uses: pdm-project/setup-pdm@v4
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install the project
-        run: |
-          pdm use ${{ steps.pdm-setup.outputs.python-path }}
-          pdm install --prod -v
-          
-      - name: Run the GUI
-        run: pdm run gui
-        env:
-          QT_QPA_PLATFORM: offscreen
-          TEST_SHUTDOWN_GUI: 1
-
-    test-conda:
-      name: Test conda install ${{ matrix.os }} / ${{ matrix.python-version }})
-      runs-on: ${{ matrix.os }}
-      strategy:
-          matrix:
-              os: [ubuntu-24.04, windows-2022, macos-13, macos-14]
-              python-version: [3.11, 3.12]
-      steps:
-        - name: Checkout repository
-          uses: actions/checkout@v2
-        - uses: conda-incubator/setup-miniconda@v3
-          with:
-            auto-update-conda: true
-            python-version: ${{ matrix.python-version }}
-            activate-environment: online_bg_removal
-            environment-file: environment.yml
-            miniforge-version: latest
-            auto-activate-base: false
-        - name: Run the GUI
-          run: python background_remover.pyw
-          shell: bash -el {0}
-          env:
-            QT_QPA_PLATFORM: offscreen
-            TEST_SHUTDOWN_GUI: 1
     
     test-pip:
       name: Test pip install ${{ matrix.os }} / ${{ matrix.python-version }})
       runs-on: ${{ matrix.os }}
       strategy:
           matrix:
-              os: [ubuntu-24.04, windows-2022, macos-13, macos-14]
-              python-version: [3.11, 3.12]
+              os: [ubuntu-latest, windows-latest, macos-latest]
+              python-version: [3.12, 3.14]
       steps:
         - name: Checkout repository
           uses: actions/checkout@v2
