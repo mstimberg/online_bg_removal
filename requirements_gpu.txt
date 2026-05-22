@@ -79,11 +79,11 @@ pyparsing==3.3.2
     # via matplotlib
 pyqtgraph==0.14.0
     # via online-bg-removal
-pyside6==6.11.1
+pyside6==6.7.3
     # via online-bg-removal
-pyside6-addons==6.11.1
+pyside6-addons==6.7.3
     # via pyside6
-pyside6-essentials==6.11.1
+pyside6-essentials==6.7.3
     # via
     #   pyside6
     #   pyside6-addons
@@ -105,7 +105,7 @@ scipy==1.17.1
     #   norfair
     #   scikit-image
     #   trackpy
-shiboken6==6.11.1
+shiboken6==6.7.3
     # via
     #   pyside6
     #   pyside6-addons
