@@ -12,7 +12,7 @@ dependencies = [
     "psutil>=6.1.1",
     "pylibtiff>=0.6.1",
     "pyqtgraph>=0.13.7",
-    "pyside6>=6.7",
+    "pyside6>=6.7,<6.8",
     "pyyaml>=6.0.2",    
     "scikit-image>=0.25.1",
     "trackpy>=0.6.4",
@@ -36,7 +36,7 @@ psutil = ">=7.0.0"
 pylibtiff = ">=0.6.1"
 libtiff = ">=4.6.0"
 pyqtgraph = ">=0.13.7"
-pyside6 = ">=6.7"
+pyside6 = ">=6.7,<6.8"
 pyyaml = ">=6.0.2"
 scikit-image = ">=0.25.2"
 trackpy = ">=0.6.4"
