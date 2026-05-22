@@ -11,9 +11,7 @@ This tool is used in our lab to record microscope images of Paramecia, remove th
     - [Getting the code](#getting-the-code)
     - [Installing the dependencies](#installing-the-dependencies)
       - [pixi](#pixi)
-      - [conda/mamba](#condamamba)
       - [uv](#uv)
-      - [pdm](#pdm)
       - [pip](#pip)
   - [License](#license)
   - [Authors](#authors)
@@ -23,11 +21,11 @@ This tool is used in our lab to record microscope images of Paramecia, remove th
 
 ## Installation
 ### Qt6
-The GUI is based on *Qt6*. If you use a conda environment (either directly or via `pixi`), the necessary libraries will be installed automatically. If you use a normal Python virtual environment (e.g. via `uv`, `pdm` or `pip`), then you'll have to make sure that these libraries are installed on your system. For Debian-based Linux distributions, you can install the
+The GUI is based on *Qt6*. If you use a conda environment (e.g. via `pixi`), the necessary libraries will be installed automatically. If you use a normal Python virtual environment (e.g. via `uv`  or `pip`), then you'll have to make sure that these libraries are installed on your system. For Debian-based Linux distributions, you can install the
 libraries with `sudo apt install libqt6widgets6t64`. For other operating systems, have a look at the [Qt documentation](https://doc.qt.io/qt-6/get-and-install-qt.html).
 
 ### CUDA
-GPU acceleration is optional, but can signficantly improve the processing speed and make the difference for everything running in real-time or not. As for the *Qt* libraries, a CUDA 12.x toolkit is installed automatically if you use `pixi` or `conda/mamba`. If you are not using such an environment, you'll have to take care of install CUDA 12.x yourself, see the [CUDA toolkit documentation](https://docs.nvidia.com/cuda/) for details.
+GPU acceleration is optional, but can signficantly improve the processing speed and make the difference for everything running in real-time or not. As for the *Qt* libraries, a CUDA 12.x toolkit is installed automatically if you use `pixi`. If you are not using such an environment, you'll have to take care of install CUDA 12.x yourself, see the [CUDA toolkit documentation](https://docs.nvidia.com/cuda/) for details.
 
 > [!IMPORTANT]
 > GPU acceleration is currently only supported for Windows and Linux.
@@ -41,7 +39,7 @@ $ git clone https://github.com/mstimberg/online_bg_removal.git
 Alternatively, you can download and unzip the [ZIP archive from GitHub](https://github.com/mstimberg/online_bg_removal/archive/refs/heads/main.zip).
 
 ### Installing the dependencies
-Below we list various ways of installing the required dependencies for this project. **You will only need to use one of the options!** Note that we recommend using `pixi` or `conda/mamba`, since these environments also take care of installing the required *Qt* library (see above). If you don't have any preference, we recommend using `pixi`.
+Below we list various ways of installing the required dependencies for this project. **You will only need to use one of the options!** Note that we recommend using `pixi`, since its environment also take care of installing the required *Qt* library (see above).
 
 #### pixi
 First, install `pixi` itself if you haven't already, see https://pixi.sh/latest/.
@@ -52,7 +50,7 @@ $ pixi run gui
 ```
 or (to use GPU acceleration)
 ```
-$ pixi run -e gpu gui
+$ pixi run -e pixi-gpu gui
 ```
 The first run will set up a conda environment and install the dependencies, later runs will re-use the existing environment.
 
@@ -60,24 +58,6 @@ To use the z prediction (which uses keras and Tensorflow), use the `tf` (CPU) or
 ```
 $ pixi run -e tf-gpu gui
 ```
-
-#### conda/mamba
-First, install `mamba` or `conda` itself if you haven't already, e.g. via the [miniforge](https://github.com/conda-forge/miniforge) distribution.
-
-In the project's directory run
-```
-$ conda env create -f environment.yml
-```
-or (to use GPU acceleration)
-```
-$ conda env create -f environment_gpu.yml
-```
-Use the command stated at the end of the installation to activate the environment and then run
-```
-$ python background_remover.pyw
-```
-to start the GUI.
-
 
 #### uv
 First, install `uv` itself if you haven't already, following the [`uv` documentation](https://docs.astral.sh/uv/getting-started/installation/).
@@ -91,23 +71,6 @@ or (to use GPU acceleration)
 $ uv run --group gpu background_remover.pyw
 ```
 The first run will set up a virtual environment and install the dependencies, later runs will re-use the existing environment.
-
-#### pdm
-First, install `pdm` itself if you haven't already, following the [`pdm` documentation](https://pdm-project.org/en/latest/#installation).
-
-In the project's directory, install the dependencies with
-```
-$ pdm install --without gpu
-```
-or (to use GPU acceleration)
-```
-$ pdm install --with gpu
-```
-
-You can then run the GUI with
-```
-$ pdm run gui
-```
 
 #### pip
 We highly recommend to first create a virtual environment for the project (note that this needs an existing Python installation with the `venv` module which is sometimes packages separately). In the project's directory run
