@@ -24,5 +24,3 @@ gpu = [
     "cupy-cuda12x>=13.3.0",
 ]
 
-[tool.pdm.scripts]
-gui = "python background_remover.pyw"
