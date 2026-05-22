@@ -62,22 +62,22 @@ LD_LIBRARY_PATH = "$LD_LIBRARY_PATH:$CONDA_PREFIX/lib"
 [tool.pixi.target.linux-64.dependencies]
 qt6-gtk-platformtheme = ">=6.7.2,<7"
 
-[tool.pixi.feature.gpu.dependencies]
+[tool.pixi.feature.pixi-gpu.dependencies]
 cudatoolkit = ">=11.2,<12"
 cudnn = "8.*"
 cuda-version = ">=11.2,<12"
 cupy = ">=12.2.0,<13"
 
-[tool.pixi.feature.gpu]
+[tool.pixi.feature.pixi-gpu]
 platforms = ["linux-64", "win-64"]
 
-[tool.pixi.feature.gpu.system-requirements]
+[tool.pixi.feature.pixi-gpu.system-requirements]
 cuda = "11.2"
 
 [tool.pixi.environments]
 tf = ["tf"]
-tf-gpu = ["tf", "gpu"]
-gpu = ["gpu"]
+tf-gpu = ["tf", "pixi-gpu"]
+gpu = ["pixi-gpu"]
 
 [tool.pixi.tasks]
 gui = "python background_remover.pyw"

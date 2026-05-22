@@ -50,7 +50,7 @@ $ pixi run gui
 ```
 or (to use GPU acceleration)
 ```
-$ pixi run -e gpu gui
+$ pixi run -e pixi-gpu gui
 ```
 The first run will set up a conda environment and install the dependencies, later runs will re-use the existing environment.
 
