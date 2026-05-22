@@ -14,13 +14,7 @@ jobs:
         steps:
         - name: Checkout repository
           uses: actions/checkout@v2
-
-        - name: Install Qt
-          uses: jurplel/install-qt-action@v4
-          with:
-            version: 6.8.2
-            aqtversion: '>=3.2.0'
-
+          
         - name: Install uv
           uses: astral-sh/setup-uv@v5
           with:
@@ -72,11 +66,7 @@ jobs:
           with:
             python-version: ${{ matrix.python-version }}
             cache: 'pip'
-        - name: Install Qt
-          uses: jurplel/install-qt-action@v4
-          with:
-            version: 6.8.2
-            aqtversion: '>=3.2.0'
+
         - name: Install dependencies
           run: pip install -r requirements.txt
         - name: Run the GUI
