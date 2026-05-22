@@ -2,7 +2,7 @@
 name = "online-bg-removal"
 version = "0.1.0"
 readme = "README.md"
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.12,<=3.14"
 dependencies = [
     "imagecodecs>=2024.12.30",
     "imageio>=2.37.0",
@@ -23,4 +23,61 @@ dependencies = [
 gpu = [
     "cupy-cuda12x>=13.3.0",
 ]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64", "win-64", "osx-arm64"]
+
+[tool.pixi.dependencies]
+imageio = ">=2.37.0,<3"
+imageio-ffmpeg = ">=0.6.0,<0.7"
+pandas = ">=2.2.3,<3"
+psutil = ">=7.0.0,<8"
+pylibtiff = ">=0.6.1,<0.7"
+libtiff = ">=4.6.0,<5"
+pyqtgraph = ">=0.13.7,<0.14"
+pyside6 = ">=6.7.2,<7"
+pyyaml = ">=6.0.2,<7"
+scikit-image = ">=0.25.2,<0.26"
+trackpy = ">=0.6.4,<0.7"
+watchdog = ">=6.0.0,<7"
+python = ">=3.12,<=3.14"
+numpy = "<2"
+imagecodecs = ">=2024.1.1,<2025"
+tqdm = ">=4.67.1,<5"
+
+[tool.pixi.feature.tf.pypi-dependencies]
+tensorflow = "<2.11"
+
+[tool.pixi.feature.tf.dependencies]
+keras = "<2.11"
+
+[tool.pixi.activation.env]
+TF_FORCE_GPU_ALLOW_GROWTH = "true"
+
+[tool.pixi.target.unix.activation.env]
+LD_LIBRARY_PATH = "$LD_LIBRARY_PATH:$CONDA_PREFIX/lib"
+
+[tool.pixi.target.linux-64.dependencies]
+qt6-gtk-platformtheme = ">=6.7.2,<7"
+
+[tool.pixi.feature.gpu.dependencies]
+cudatoolkit = "11.2.*"
+cudnn = "8.*"
+cuda-version = "11.*"
+cupy = ">=12.2.0,<13"
+
+[tool.pixi.feature.gpu]
+platforms = ["linux-64", "win-64"]
+
+[tool.pixi.feature.gpu.system-requirements]
+cuda = "11"
+
+[tool.pixi.environments]
+tf = ["tf"]
+tf-gpu = ["tf", "gpu"]
+gpu = ["gpu"]
+
+[tool.pixi.tasks]
+gui = "python background_remover.pyw"
 
