@@ -4,7 +4,7 @@ version = "0.1.0"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "imagecodecs>=2024.12.30",
+    "imagecodecs>=2024.1.1",
     "imageio>=2.37.0",
     "imageio-ffmpeg>=0.6.0",
     "norfair>=2.2.0",
@@ -12,8 +12,8 @@ dependencies = [
     "psutil>=6.1.1",
     "pylibtiff>=0.6.1",
     "pyqtgraph>=0.13.7",
-    "pyside6>=6.8.2.1",
-    "pyyaml>=6.0.2",
+    "pyside6>=6.7",
+    "pyyaml>=6.0.2",    
     "scikit-image>=0.25.1",
     "trackpy>=0.6.4",
     "watchdog>=6.0.0",
@@ -29,28 +29,29 @@ channels = ["conda-forge"]
 platforms = ["linux-64", "win-64", "osx-arm64"]
 
 [tool.pixi.dependencies]
-imageio = ">=2.37.0,<3"
-imageio-ffmpeg = ">=0.6.0,<0.7"
-pandas = ">=2.2.3,<3"
-psutil = ">=7.0.0,<8"
-pylibtiff = ">=0.6.1,<0.7"
-libtiff = ">=4.6.0,<5"
-pyqtgraph = ">=0.13.7,<0.14"
-pyside6 = ">=6.7.2,<7"
-pyyaml = ">=6.0.2,<7"
-scikit-image = ">=0.25.2,<0.26"
-trackpy = ">=0.6.4,<0.7"
-watchdog = ">=6.0.0,<7"
-python = ">=3.12,<=3.14"
+imageio = ">=2.37.0"
+imageio-ffmpeg = ">=0.6.0"
+pandas = ">=2.2.3"
+psutil = ">=7.0.0"
+pylibtiff = ">=0.6.1"
+libtiff = ">=4.6.0"
+pyqtgraph = ">=0.13.7"
+pyside6 = ">=6.7"
+pyyaml = ">=6.0.2"
+scikit-image = ">=0.25.2"
+trackpy = ">=0.6.4"
+watchdog = ">=6.0.0"
+python = ">=3.12,<3.13"
+rich = "<15"  # required by norfair
 numpy = "<2"
-imagecodecs = ">=2024.1.1,<2025"
-tqdm = ">=4.67.1,<5"
+imagecodecs = ">=2024.1.1"
+tqdm = ">=4.67.1"
 
 [tool.pixi.feature.tf.pypi-dependencies]
-tensorflow = "<2.11"
+tensorflow = ">=2.11"
 
 [tool.pixi.feature.tf.dependencies]
-keras = "<2.11"
+keras = ">=2.11"
 
 [tool.pixi.activation.env]
 TF_FORCE_GPU_ALLOW_GROWTH = "true"
@@ -62,16 +63,16 @@ LD_LIBRARY_PATH = "$LD_LIBRARY_PATH:$CONDA_PREFIX/lib"
 qt6-gtk-platformtheme = ">=6.7.2,<7"
 
 [tool.pixi.feature.gpu.dependencies]
-cudatoolkit = "11.2.*"
+cudatoolkit = ">=11.2,<12"
 cudnn = "8.*"
-cuda-version = "11.*"
+cuda-version = ">=11.2,<12"
 cupy = ">=12.2.0,<13"
 
 [tool.pixi.feature.gpu]
 platforms = ["linux-64", "win-64"]
 
 [tool.pixi.feature.gpu.system-requirements]
-cuda = "11"
+cuda = "11.2"
 
 [tool.pixi.environments]
 tf = ["tf"]
