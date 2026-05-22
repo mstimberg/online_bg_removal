@@ -6,6 +6,7 @@ This tool is used in our lab to record microscope images of Paramecia, remove th
 - [Online background removal and cell tracking tool](#online-background-removal-and-cell-tracking-tool)
   - [Table of contents](#table-of-contents)
   - [Installation](#installation)
+    - [Qt6](#qt6)
     - [CUDA](#cuda)
     - [Getting the code](#getting-the-code)
     - [Installing the dependencies](#installing-the-dependencies)
@@ -19,6 +20,10 @@ This tool is used in our lab to record microscope images of Paramecia, remove th
 > Only the `pixi` installation instructions and configuration files are up-to-date for using the z-prediction with Tensorflow
 
 ## Installation
+### Qt6
+The GUI is based on *Qt6*. If you use a conda environment (e.g. via `pixi`), the necessary libraries will be installed automatically. If you use a normal Python virtual environment (e.g. via `uv`  or `pip`), then you'll have to make sure that these libraries are installed on your system. For Debian-based Linux distributions, you can install the
+libraries with `sudo apt install libqt6widgets6t64`. For other operating systems, have a look at the [Qt documentation](https://doc.qt.io/qt-6/get-and-install-qt.html).
+
 ### CUDA
 GPU acceleration is optional, but can signficantly improve the processing speed and make the difference for everything running in real-time or not. As for the *Qt* libraries, a CUDA 12.x toolkit is installed automatically if you use `pixi`. If you are not using such an environment, you'll have to take care of install CUDA 12.x yourself, see the [CUDA toolkit documentation](https://docs.nvidia.com/cuda/) for details.
 
