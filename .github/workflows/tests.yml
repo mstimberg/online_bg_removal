@@ -1,4 +1,4 @@
-name: Test Project with UV
+name: Test Project installation and run
 
 on: [push, pull_request]
 
@@ -13,16 +13,16 @@ jobs:
 
         steps:
         - name: Checkout repository
-          uses: actions/checkout@v2
+          uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
         - name: Install Qt
-          uses: jurplel/install-qt-action@v4
+          uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730  #v4.3.1
           with:
             version: 6.7
             aqtversion: '>=3.2.0'
 
         - name: Install uv
-          uses: astral-sh/setup-uv@v5
+          uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
           with:
             enable-cache: true
             python-version: ${{ matrix.python-version }}
@@ -45,10 +45,10 @@ jobs:
         
         steps:
         - name: Checkout repository
-          uses: actions/checkout@v2
+          uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         
         - name: Install pixi
-          uses: prefix-dev/setup-pixi@v0.8.0
+          uses: prefix-dev/setup-pixi@5185adfbffb4bd703da3010310260805d89ebb11  # v0.9.6
           with:
             cache: true
 
@@ -67,13 +67,13 @@ jobs:
               python-version: [3.12]
       steps:
         - name: Checkout repository
-          uses: actions/checkout@v2
-        - uses: actions/setup-python@v5
+          uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
           with:
             python-version: ${{ matrix.python-version }}
             cache: 'pip'
         - name: Install Qt
-          uses: jurplel/install-qt-action@v4
+          uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730  #v4.3.1
           with:
             version: 6.7
             aqtversion: '>=3.2.0'
