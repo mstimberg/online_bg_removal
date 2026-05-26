@@ -19,9 +19,13 @@ dependencies = [
     "watchdog>=6.0.0",
 ]
 
-[dependency-groups]
+[project.optional-dependencies]
 gpu = [
     "cupy-cuda12x>=13.3.0",
+]
+yolo = [
+    "cupy-cuda12x>=13.3.0",
+    "ultralytics>=8.4.54",
 ]
 
 [tool.pixi.workspace]
