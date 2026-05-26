@@ -78,11 +78,17 @@ platforms = ["linux-64", "win-64"]
 [tool.pixi.feature.pixi-gpu.system-requirements]
 cuda = "11.2"
 
+[tool.pixi.feature.pixi-yolo.dependencies]
+ultralytics = "=8.4.54"
+
+
 [tool.pixi.environments]
 tf = ["tf"]
 tf-gpu = ["tf", "pixi-gpu"]
 gpu = ["pixi-gpu"]
+yolo = ["pixi-gpu", "pixi-yolo"]
 
 [tool.pixi.tasks]
 gui = "python background_remover.pyw"
+
 
