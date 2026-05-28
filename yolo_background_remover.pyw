@@ -719,10 +719,10 @@ class FileReader(QtCore.QRunnable):
             )
         self.read_queue.task_done(index=self.idx)
 
-def find_cells(frame, model, conf=0.2, iou=0.7):
+def find_cells(frame, model, conf=0.2, iou=0.7, half=False):
     if frame.ndim == 2:
         frame = np.broadcast_to(frame[:, :, None], frame.shape + (3,))
-    results = model(frame, imgsz=frame.shape[:2], conf=conf, iou=iou)
+    results = model(frame, imgsz=frame.shape[:2], conf=conf, iou=iou, half=half)
     return results[0].boxes.xyxy.cpu().numpy()
 
 def create_mask(boxes, frame_shape):
@@ -2351,7 +2351,6 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         source_folder_group_layout.addLayout(layout)
         self.schedule = None
 
-
         # Select inference model
         model_group = QtWidgets.QGroupBox("Inference model")
         model_group_layout = QtWidgets.QVBoxLayout()
@@ -2390,7 +2389,6 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self.iou = QtWidgets.QDoubleSpinBox()
         self.iou.setMinimum(0.01)
         self.iou.setMaximum(1)
-        self.iou = QtWidgets.QDoubleSpinBox()
         self.iou.setSingleStep(0.1)
         self.iou.setValue(prev_settings.get("inference", {}).get("iou", 0.7))
         self.iou.setKeyboardTracking(False)
@@ -2398,6 +2396,14 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         iou_label.setBuddy(self.iou)
         layout.addWidget(iou_label)
         layout.addWidget(self.iou)
+        model_group_layout.addLayout(layout)
+
+        layout = QtWidgets.QHBoxLayout()
+
+        self.half_precision = QtWidgets.QCheckBox("&Half precision: ")        
+        self.half_precision.setChecked(prev_settings.get("inference", {}).get("half_precision", False))        
+        self.half_precision.checkStateChanged.connect(lambda value: self.update_masked())        
+        layout.addWidget(self.half_precision)
         model_group_layout.addLayout(layout)
 
         controls_layout.addWidget(model_group)
@@ -2610,7 +2616,6 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         # Will open the progress dialog
         self.process_folder(delete_files, index_step)
 
-
     def preview_folder(self):
         if self.file_number_timer is not None:
             self.file_number_timer.stop()
@@ -2621,10 +2626,9 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         if len(self.filenames) == 0:
             return
 
-        
         n_frames = min([len(self.filenames), 50])
         read_function = read_functions[self.read_library.currentText()]
-        
+
         # get first frame to determine size
         full_path = os.path.join(dirname, self.filenames[0])
         if os.path.splitext(full_path)[1] in [".tiff", ".tif"]:
@@ -2714,13 +2718,20 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             "delete_files": delete_files,
             "delete_compressed_files": self.delete_compressed_files.isChecked(),
             "fps": self.framerate.value(),
-        }        
+        }
+        inference_params = {
+            "model_file": self.model_file.text(),
+            "conf_threshold": self.conf_threshold.value(),
+            "iou": self.iou.value(),
+            "half_precision": self.half_precision.isChecked(),
+        }
         dialog = ProgressDialog(
             self,
             background_params,
             file_write_params,
             self.fileno_offset,
-            index_step,         
+            index_step,
+            inference_params=inference_params,
         )
 
         dialog.run()
@@ -2767,13 +2778,13 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         )
 
     def update_masked(self, initialize=False):
-        
+
         current_idx = self.image_preview.currentIndex
         roi_slice = get_roi_slice(self.roi_selector)
 
         image = np.asarray(self.preview_frames[current_idx])
         image = image[roi_slice]
-        
+
         if not initialize:
             view_box = self.masked_preview.getImageItem().getViewBox()
             state = view_box.getState()
@@ -2781,7 +2792,13 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         if self.inference_model:
             conf = self.conf_threshold.value()
             iou = self.iou.value()
-            mask = create_mask(find_cells(image, self.inference_model, conf=conf, iou=iou), image.shape)
+            half_precision = self.half_precision.isChecked()
+            mask = create_mask(
+                find_cells(
+                    image, self.inference_model, conf=conf, iou=iou, half=half_precision
+                ),
+                image.shape,
+            )
             # Store zoom/pan
 
             # Build an RGBA composite: original image + semi-transparent mask overlay
@@ -2803,13 +2820,12 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         else:
             self.masked_preview.setImage(image)
             self.masked_file_preview = None
-            
+
         # Restore zoom/pan
         if not initialize:
             view_box.setState(state)
-        
-        self.update_target_file_size()
 
+        self.update_target_file_size()
 
     def update_target_file_size(self):
 
@@ -2828,7 +2844,6 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self.target_files_label.setText(
             f"Compressed: <b>{readable_size}</b> (factor ~<b>{factor}</b>)"
         )
-
 
     def select_source_folder(self):
         start_dir = self.source_folder.text()
@@ -2874,7 +2889,6 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         fname = self.model_file.text()
         self.inference_model = YOLO(fname)
         self.update_masked()
-
 
     def select_target_folder(self):
         folder = QtWidgets.QFileDialog.getExistingDirectory(
