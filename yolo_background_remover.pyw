@@ -740,42 +740,26 @@ class YoloBackgroundRemover(QtCore.QThread):
         self,
         progress_dialog,
         task_queue,
-        track_queue,
-        background_frames,
-        chunk_size,
-        threshold,
-        roi_slice,
-        target_folder,
-        filename_prefix,
-        original_size,
-        pixel_size,
-        min_area,
-        max_area,
-        video_tasks,
-        file_tasks,
-        dark_field=False,
+        bg_params,
+        file_write_params,
+        inference_params,                
+        video_queue,
+        file_queue,
     ):
         super().__init__(parent=progress_dialog)
         self.progress_dialog = progress_dialog
         self.task_queue = task_queue
-        self.track_queue = track_queue
-        self.dark_field = dark_field
-        self.background_frames = (background_frames,)
-        self.chunk_size = chunk_size
-        self.threshold = threshold        
-        self.pixel_size = pixel_size
-        self.min_area_pixels = min_area / (pixel_size**2)
-        self.max_area_pixels = max_area / (pixel_size**2)
-        self.original_size = original_size
-        self.roi_slice = roi_slice
-        self.target_folder = target_folder
-        self.filename_prefix = filename_prefix
-        self.video_tasks = video_tasks
-        self.file_tasks = file_tasks
+        self.bg_params = bg_params
+        self.file_write_params = file_write_params        
+        self.inference_params = dict(inference_params)
+        self.video_tasks = video_queue
+        self.file_tasks = file_queue
         self._last_idx = -1
         # We store the original file names for later
         self._orig_fnames = {}
-    
+        self.buffer = None        
+        self.model = YOLO(self.inference_params["model_file"])
+
     @run_wrapper
     def run(self) -> None:
         global exception_occured
@@ -800,6 +784,25 @@ class YoloBackgroundRemover(QtCore.QThread):
                 self.thread().msleep(100)
                 continue            
 
+            # TODO no video written in end
+            if task["type"] == "stop":
+                self.task_queue.task_done(index=idx)
+                if self.video_tasks is not None:
+                    # Request merging of video files
+                    self.video_tasks.put(
+                        {
+                            "stop": True,
+                            "final": task["final"],
+                            "epoch": task["epoch"],
+                            "discard": task["discard"],
+                        }
+                    )
+                if task.get("final", False):
+                    # End thread
+                    break
+                else:
+                    continue
+
             self._last_idx = idx
             fname = task["fname"]
             discard = task.get("discard", False)
@@ -814,18 +817,24 @@ class YoloBackgroundRemover(QtCore.QThread):
             relative_idx = task["relative_idx"]
 
             # The ROI has been "frozen", we only care about this part of the frame from now on
-            frame = frame[self.roi_slice]
-            if self.dark_field:
-                frame = 255 - frame            
+            frame = frame[self.bg_params["roi_slice"]]
+            if self.bg_params["dark_field"]:
+                frame = 255 - frame
             try:
                 logger.debug(
                         f"Finding cells in frame {idx}",
                         extra={"index": idx},
                     )
-                bounding_boxes = self.find_cells(frame)
+                bounding_boxes = find_cells(
+                    frame,
+                    self.model,
+                    conf=self.inference_params["conf_threshold"],
+                    iou=self.inference_params["iou"],
+                    half=self.inference_params["half_precision"],
+                )
                 mask = create_mask(bounding_boxes, frame.shape)
                 masked_frame = frame  # no copy, but we don't use it anymore, do we?
-                masked_frame[mask] = 0
+                masked_frame[mask] = 255
 
             except Exception:
                 logger.exception(
@@ -837,13 +846,14 @@ class YoloBackgroundRemover(QtCore.QThread):
             # We start our file names with 1 for ffmpeg
             if epoch == -1:
                 filename = os.path.join(
-                    "frames", self.filename_prefix + f"{idx + 1:07d}.tiff"
+                    "frames", self.bg_params["filename_prefix"] + f"{idx + 1:07d}.tiff"
                 )
             else:
                 filename = os.path.join(
                     "frames",
-                    self.filename_prefix + f"{epoch:04d}_{relative_idx + 1:07d}.tiff",
+                    self.bg_params["filename_prefix"] + f"{epoch:04d}_{relative_idx + 1:07d}.tiff",
                 )
+            self.task_queue.task_done(index=idx)
             logger.debug(
                 f"Background remover: processed frame {idx} ('{filename}')",
                 extra={"index": idx},
@@ -856,7 +866,20 @@ class YoloBackgroundRemover(QtCore.QThread):
                     "frame": masked_frame,
                 }
             )
-
+            if self.video_tasks is not None:
+                logger.debug(
+                    f"Background remover: submitted video task for frame {self._last_idx}",
+                    extra={"index": self._last_idx},
+                )
+                self.video_tasks.put(
+                    {
+                        "idx": self._last_idx,
+                        "n_frames": 1,
+                        "epoch": epoch,
+                        "relative_start_idx": relative_idx,
+                        "discard": False,
+                    }
+                )
 
 class FileWriterThread(QtCore.QThread):
     def __init__(
@@ -865,7 +888,6 @@ class FileWriterThread(QtCore.QThread):
         source_folder,
         target_folder,
         compression_algorithm,
-        pixel_size,
         fps,
         task_queue,
         track_queue,
@@ -877,7 +899,6 @@ class FileWriterThread(QtCore.QThread):
         self.source_folder = source_folder
         self.target_folder = target_folder
         self.compression_algorithm = compression_algorithm
-        self.pixel_size = pixel_size
         self.fps = fps
         self.delete_files = delete_files
         self.delete_compressed_files = delete_compressed_files
@@ -937,7 +958,6 @@ class FileWriterThread(QtCore.QThread):
             full_path,
             array,
             compression=self.compression_algorithm,
-            pixelsize=self.pixel_size,
         )
         logger.debug(f"Wrote '{fname}' (with imageio)", extra={"index": idx})
         self.task_queue.task_done(index=idx)
@@ -1413,11 +1433,7 @@ class ProgressDialog(QtWidgets.QDialog):
         bg_params,
         file_write_params,
         fileno_offset,
-        fileno_step,
-        track,
-        track_features,
-        link_tracks,
-        zip_tracking_file,
+        fileno_step,      
         inference_params,
         record_video,
         read_function,
@@ -1502,10 +1518,7 @@ class ProgressDialog(QtWidgets.QDialog):
             self.video_queue = QueueWithSignals(
                 queue.Queue(), "Video writing", parent=self
             )
-            self.queues["Videos written"] = self.video_queue
-        if track:
-            self.track_queue = JoinableQueue()
-            self.queues["Tracking"] = self.track_queue
+            self.queues["Videos written"] = self.video_queue        
 
         self.progress_bars = {}
 
@@ -1654,67 +1667,6 @@ class ProgressDialog(QtWidgets.QDialog):
         logger.removeHandler(self.log_file)
         return super().accept()
 
-    def create_overview_fig(self):
-        # We create a basic overview figure with matplotlib showing the elements of the processing
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        from matplotlib.patches import Rectangle
-
-        fig, axs = plt.subplots(
-            2, 2, layout="constrained", figsize=(1920 // 72, 1080 // 72)
-        )
-        # Original image
-        if cp:
-            source_image = self.bg_calc.circular_buffer[0].get()
-        else:
-            source_image = self.bg_calc.circular_buffer[0]
-        axs[0, 0].imshow(source_image, cmap="gray")
-        axs[0, 0].add_patch(
-            Rectangle(
-                (self.roi_slice[1].start, self.roi_slice[0].start),
-                self.roi_slice[1].stop - self.roi_slice[1].start,
-                self.roi_slice[0].stop - self.roi_slice[0].start,
-                edgecolor="darkred",
-                facecolor="none",
-                lw=2,
-            )
-        )
-        axs[0, 0].set_title("Source image")
-
-        # ROI region
-        axs[0, 1].imshow(source_image[self.roi_slice], cmap="gray")
-        axs[0, 1].set_title("Region of interest")
-
-        bg_calc = self.bg_params["bg_calc"]
-        # Background
-        if cp:
-            axs[1, 0].imshow(bg_calc.background.get(), cmap="gray")
-        else:
-            axs[1, 0].imshow(bg_calc.background, cmap="gray")
-        axs[1, 0].set_title(f"Background (average of {bg_calc.buffersize})")
-
-        removed = bg_calc.remove_background(
-            source_image, bg_calc.background, self.threshold
-        )
-        axs[1, 1].imshow(removed, cmap="gray")
-        axs[1, 1].set_title(f"Final image (thresholded at {self.threshold})")
-
-        for idx, ax in enumerate(axs.flat):
-            ax.set_xticks([])
-            ax.set_yticks([])
-            ax.set_aspect("equal")
-            if idx > 0:
-                ax.spines["bottom"].set_color("darkred")
-                ax.spines["top"].set_color("darkred")
-                ax.spines["right"].set_color("darkred")
-                ax.spines["left"].set_color("darkred")
-
-        fig.savefig(
-            os.path.join(self.target_dir, "backgrounds", "overview.tiff"), dpi=72
-        )
-
     def run(self):
         # self.create_overview_fig()  # TODO
         dirname = self.file_write_params["source_folder"]
@@ -1722,7 +1674,7 @@ class ProgressDialog(QtWidgets.QDialog):
         self.background_file_watcher = FileWatcher(self, dirname, self.fileno_offset, self.fileno_step)
         self.dir_observer.schedule(self.background_file_watcher, dirname)
         self.tracker = None
-
+        self.track_queue = None
         self.video_thread = None
 
         if self.record_video:
@@ -1742,10 +1694,11 @@ class ProgressDialog(QtWidgets.QDialog):
         self.background_remover = YoloBackgroundRemover(
             progress_dialog=self,
             task_queue=self.processing_queue,
-            track_queue=self.track_queue,
-            **self.bg_params,
-            video_tasks=self.video_queue,
-            file_tasks=self.file_write_queue,
+            bg_params=self.bg_params,
+            file_write_params=self.file_write_params,
+            inference_params=self.inference_params,
+            video_queue=self.video_queue,
+            file_queue=self.file_write_queue,
         )
         wait_for = 1
         if self.video_thread:
@@ -1806,7 +1759,6 @@ class ProgressDialog(QtWidgets.QDialog):
             },
             "filename_prefix": self.bg_params["filename_prefix"],
             "archive_compressed_files": self.archive_compressed_files,
-            "threshold": self.bg_params["threshold"],
             "read_function": self.read_function.__name__,
             "inference": self.inference_params,
         }
@@ -1830,9 +1782,6 @@ class ProgressDialog(QtWidgets.QDialog):
 
         self.background_remover.setObjectName("BackgroundRemover")
         self.background_remover.start()
-
-        if self.tracker is not None:
-            self.tracker.start()  # separate process
 
         if self.video_thread is not None:
             self.video_thread.setObjectName("VideoThread")
@@ -1868,9 +1817,7 @@ class ProgressDialog(QtWidgets.QDialog):
 
         # Discard all images that were created before the start of the program
         if ctime < self.start_time:
-            self.background_remover.bg_calc.frame_index = 0
-            self.background_remover.bg_calc.caclulated = False
-            self.background_remover.bg_calc.background_sum[:] = 0
+            self.background_remover.reset()
             self.recording = False
             logger.debug(
                 f"Discarding image {idx} created before the start of the schedule"
@@ -1925,9 +1872,7 @@ class ProgressDialog(QtWidgets.QDialog):
                     self._current_schedule_duration = schedule["record"].total_seconds()
                     self._epoch += 1
                     self._epoch_start_idx = idx
-                    self.background_remover.bg_calc.frame_index = 0
-                    self.background_remover.bg_calc.caclulated = False
-                    self.background_remover.bg_calc.background_sum[:] = 0
+                    self.background_remover.reset()
 
                 self.schedule_progress.setMaximum(int(self._current_schedule_duration))
                 self._last_schedule_switch = time.time()
@@ -2358,7 +2303,9 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         layout = QtWidgets.QHBoxLayout()
         self.model_file = QtWidgets.QLineEdit()
         self.model_file.setPlaceholderText("Model weights file")
-        self.model_file.setText(prev_settings.get("inference", {}).get("weights_file", ""))
+        self.model_file.setText(prev_settings.get("inference", {}).get("model_file", ""))
+        if self.model_file.text():
+            self.change_model_file()
         file_icon = self.style().standardIcon(
             QtWidgets.QStyle.StandardPixmap.SP_FileIcon
         )
@@ -2507,7 +2454,6 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self.run_button.setPalette(palette)
         self.run_button.setAutoFillBackground(True)
         self.run_button.clicked.connect(self.proceed)
-        self.run_button.setEnabled(False)
 
         controls_layout.addWidget(self.run_button)
 
@@ -2711,10 +2657,11 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         # Stop updating the number of files
         self.file_number_timer.stop()
 
-        x, y = self.bg_calc.frames[0].shape
+        x, y = self.preview_frames[0].shape
         # Free the memory used for the initial frames
-        del self.bg_calc
-        self.bg_calc = None
+        del self.preview_frames
+        self.preview_frames = None
+
         roi_slice = get_roi_slice(self.roi_selector)
         background_params = {
             "original_size": (x, y),            
@@ -2740,11 +2687,15 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         }
         dialog = ProgressDialog(
             self,
-            background_params,
-            file_write_params,
-            self.fileno_offset,
-            index_step,
+            bg_params=background_params,
+            file_write_params=file_write_params,
+            fileno_offset=self.fileno_offset,
+            fileno_step=index_step,
             inference_params=inference_params,
+            record_video=self.record_video.isChecked(),
+            read_function=read_functions[self.read_library.currentText()],
+            archive_compressed_files=self.archive_compressed_files.isChecked(),
+            schedule=self.schedule,
         )
 
         dialog.run()
