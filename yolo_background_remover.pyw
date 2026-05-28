@@ -34,7 +34,7 @@ import skimage
 import tifffile
 import yaml
 from pyqtgraph import RectROI
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QLocale, Qt
 from ultralytics import YOLO
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -2371,6 +2371,18 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         model_group_layout.addLayout(layout)
 
         layout = QtWidgets.QHBoxLayout()
+        batch_size_label = QtWidgets.QLabel("&Batch size: ")
+        self.batch_size = QtWidgets.QSpinBox()
+        self.batch_size.setMinimum(1)
+        self.batch_size.setMaximum(1000)
+        self.batch_size.setValue(prev_settings.get("inference", {}).get("batch_size", 1))
+        self.batch_size.setKeyboardTracking(False)
+        batch_size_label.setBuddy(self.batch_size)
+        layout.addWidget(batch_size_label)
+        layout.addWidget(self.batch_size)
+        model_group_layout.addLayout(layout)
+
+        layout = QtWidgets.QHBoxLayout()
         conf_threshold_label = QtWidgets.QLabel("&Confidence threshold: ")
         self.conf_threshold = QtWidgets.QDoubleSpinBox()
         self.conf_threshold.setMinimum(0.01)
@@ -2724,6 +2736,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             "conf_threshold": self.conf_threshold.value(),
             "iou": self.iou.value(),
             "half_precision": self.half_precision.isChecked(),
+            "batch_size": self.batch_size.value(),
         }
         dialog = ProgressDialog(
             self,
@@ -2778,7 +2791,9 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         )
 
     def update_masked(self, initialize=False):
-
+        if not self.roi_selector:
+            return
+        
         current_idx = self.image_preview.currentIndex
         roi_slice = get_roi_slice(self.roi_selector)
 
@@ -2925,6 +2940,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
 
 
 if __name__ == '__main__':
+    QLocale.setDefault(QLocale.C)  # do not use local decimal point settings
     if len(sys.argv) > 2:
         print(f"Ignoring arguments: '{' '.join(sys.argv[2:])}'", file=sys.stderr)
         print("Only a single directory argument is supported", file=sys.stderr, flush=True)
@@ -2941,5 +2957,5 @@ if __name__ == '__main__':
     win.show()
     if os.environ.get("TEST_SHUTDOWN_GUI", "0") == "1":
         # Send close signal after one second
-        QtCore.QTimer.singleShot(1000, app.quit)
+        QtCore.QTimer.singleShot(1000, app.quit)    
     app.exec()
