@@ -2210,6 +2210,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self.prev_roi_size = None
         self.inference_model = None
         self.masked_file_preview = None
+        self._bbox_squares = []
 
         self.image_preview.ui.menuBtn.hide()
         self.image_preview.getHistogramWidget().hide()
@@ -2316,6 +2317,9 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         layout.addWidget(self.model_file)
         layout.addWidget(self.model_button)
         model_group_layout.addLayout(layout)
+
+        self.cell_label = QtWidgets.QLabel()
+        model_group_layout.addWidget(self.cell_label)
 
         layout = QtWidgets.QHBoxLayout()
         batch_size_label = QtWidgets.QLabel("&Batch size: ")
@@ -2744,7 +2748,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
     def update_masked(self, initialize=False):
         if not self.roi_selector:
             return
-        
+
         current_idx = self.image_preview.currentIndex
         roi_slice = get_roi_slice(self.roi_selector)
 
@@ -2755,16 +2759,26 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             view_box = self.masked_preview.getImageItem().getViewBox()
             state = view_box.getState()
 
+        for square in self._bbox_squares:
+            self.masked_preview.getView().removeItem(square)
+        self._bbox_squares.clear()
+
         if self.inference_model:
             conf = self.conf_threshold.value()
             iou = self.iou.value()
             half_precision = self.half_precision.isChecked()
+            start = time.time()
+            self.start_task("Identifiying cells", 0)  # TODO: This does not work because we are blocking the UI thread
+            boxes = find_cells(
+                image, self.inference_model, conf=conf, iou=iou, half=half_precision
+            )
             mask = create_mask(
-                find_cells(
-                    image, self.inference_model, conf=conf, iou=iou, half=half_precision
-                ),
+                boxes,
                 image.shape,
             )
+            self.finish_task()
+            took = time.time() - start
+            self.cell_label.setText(f"Found {len(boxes)} cells in {took*1000:.0f}ms")
             # Store zoom/pan
 
             # Build an RGBA composite: original image + semi-transparent mask overlay
@@ -2779,11 +2793,21 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             rgba[..., :3] = (
                 overlay[..., :3] * alpha + rgba[..., :3] * (1 - alpha)
             ).astype(np.uint8)
+
             self.masked_preview.setImage(rgba)
             masked_file = image.copy()
             masked_file[mask] = 255
             self.masked_file_preview = masked_file
+            pen_color = QtGui.QColor("#C80000")
+            pen_color.setAlpha(200)
+            for y1,x1,y2,x2 in boxes:
+                square = QtWidgets.QGraphicsRectItem(x1, y1, x2-x1, y2-y1)            
+                square.setPen(pg.mkPen(pen_color, width=1))
+                
+                self.masked_preview.getView().addItem(square)
+                self._bbox_squares.append(square)            
         else:
+            self.cell_label.setText("")
             self.masked_preview.setImage(image)
             self.masked_file_preview = None
 
@@ -2867,8 +2891,10 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self.task_items = 0
         self.status_text.setText(title)
         self.progress_bar.setMaximum(items)
+        self.progress_bar.setValue(0)
         self.progress_bar.setVisible(True)
-        # TODO: Disable controls
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        
 
     def update_task(self, item):
         self.progress_bar.setValue(item)
@@ -2883,6 +2909,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
     def finish_task(self):
         self.status_text.setText("")
         self.progress_bar.setVisible(False)
+        QtWidgets.QApplication.restoreOverrideCursor()
 
     @QtCore.Slot(int, str, np.ndarray)
     def frame_processed(self, idx, fname, frame):
