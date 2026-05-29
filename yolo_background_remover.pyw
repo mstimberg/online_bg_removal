@@ -2184,6 +2184,31 @@ class ProgressDialog(QtWidgets.QDialog):
             processed_view_box.setState(procsed_state)
 
 
+class FindCellsWorker(QtCore.QThread):
+    finished = QtCore.Signal()
+    
+    def __init__(self, image, model, conf, iou, half, initialize=False):
+        self.image = image
+        self.conf = conf
+        self.iou = iou
+        self.half = half
+        self.model = model
+        self.initialize = initialize
+        super().__init__()
+
+    def run(self):
+        start = time.time()
+        
+        self.boxes = find_cells(
+            self.image, self.model, conf=self.conf, iou=self.iou, half=self.half,
+        )
+        self.mask = create_mask(
+            self.boxes,
+            self.image.shape,
+        )        
+        self.took = time.time() - start
+        self.finished.emit()
+
 # Inherit from Qt window
 class FileCompressorGui(QtWidgets.QMainWindow):
     def __init__(self, directory=None):
@@ -2747,75 +2772,83 @@ class FileCompressorGui(QtWidgets.QMainWindow):
 
     def update_masked(self, initialize=False):
         if not self.roi_selector:
-            return
-
-        current_idx = self.image_preview.currentIndex
-        roi_slice = get_roi_slice(self.roi_selector)
-
-        image = np.asarray(self.preview_frames[current_idx])
-        image = image[roi_slice]
-
-        if not initialize:
-            view_box = self.masked_preview.getImageItem().getViewBox()
-            state = view_box.getState()
+            return        
 
         for square in self._bbox_squares:
             self.masked_preview.getView().removeItem(square)
         self._bbox_squares.clear()
+        
+        current_idx = self.image_preview.currentIndex
+        roi_slice = get_roi_slice(self.roi_selector)
+        image = np.asarray(self.preview_frames[current_idx])
+        image = image[roi_slice]
+
+        # Switch back image but keep zoom/pan
+        if not initialize:
+            view_box = self.masked_preview.getImageItem().getViewBox()
+            state = view_box.getState()
+        self.masked_preview.setImage(image)
+        if not initialize:
+            view_box.setState(state)
 
         if self.inference_model:
             conf = self.conf_threshold.value()
             iou = self.iou.value()
             half_precision = self.half_precision.isChecked()
-            start = time.time()
-            self.start_task("Identifiying cells", 0)  # TODO: This does not work because we are blocking the UI thread
-            boxes = find_cells(
-                image, self.inference_model, conf=conf, iou=iou, half=half_precision
+            self.start_task("Identifiying cells")
+            self._find_cells_worker = FindCellsWorker(
+                image, self.inference_model, conf, iou, half_precision, initialize
             )
-            mask = create_mask(
-                boxes,
-                image.shape,
-            )
-            self.finish_task()
-            took = time.time() - start
-            self.cell_label.setText(f"Found {len(boxes)} cells in {took*1000:.0f}ms")
-            # Store zoom/pan
-
-            # Build an RGBA composite: original image + semi-transparent mask overlay
-            rgba = np.zeros((*image.shape, 4), dtype=np.uint8)
-            rgba[..., :3] = image[:, :, None]
-            rgba[..., 3] = 255  # fully opaque base image
-            # Overlay mask in semi-transparent red
-            overlay = np.zeros((*image.shape, 4), dtype=np.uint8)
-            overlay[mask] = [*MASK_COLOR, 120]
-            # Alpha-composite overlay onto rgba
-            alpha = overlay[..., 3:4].astype(np.float32) / 255.0
-            rgba[..., :3] = (
-                overlay[..., :3] * alpha + rgba[..., :3] * (1 - alpha)
-            ).astype(np.uint8)
-
-            self.masked_preview.setImage(rgba)
-            masked_file = image.copy()
-            masked_file[mask] = 255
-            self.masked_file_preview = masked_file
-            pen_color = QtGui.QColor("#C80000")
-            pen_color.setAlpha(200)
-            for y1,x1,y2,x2 in boxes:
-                square = QtWidgets.QGraphicsRectItem(x1, y1, x2-x1, y2-y1)            
-                square.setPen(pg.mkPen(pen_color, width=1))
-                
-                self.masked_preview.getView().addItem(square)
-                self._bbox_squares.append(square)            
+            self._find_cells_worker.finished.connect(self.cells_finished)
+            self._find_cells_worker.start()            
         else:
             self.cell_label.setText("")
-            self.masked_preview.setImage(image)
             self.masked_file_preview = None
+        self.target_files_label.setText("")
+
+    @QtCore.Slot()
+    def cells_finished(self):
+        boxes = self._find_cells_worker.boxes
+        mask = self._find_cells_worker.mask
+        image = self._find_cells_worker.image
+        took = self._find_cells_worker.took
+        initialize = self._find_cells_worker.initialize
+        if not initialize:
+            view_box = self.masked_preview.getImageItem().getViewBox()
+            state = view_box.getState()
+        self.cell_label.setText(f"Found {len(boxes)} cells in {took*1000:.0f}ms")
+
+        # Build an RGBA composite: original image + semi-transparent mask overlay
+        rgba = np.zeros((*image.shape, 4), dtype=np.uint8)
+        rgba[..., :3] = image[:, :, None]
+        rgba[..., 3] = 255  # fully opaque base image
+        # Overlay mask in semi-transparent red
+        overlay = np.zeros((*image.shape, 4), dtype=np.uint8)
+        overlay[mask] = [*MASK_COLOR, 120]
+        # Alpha-composite overlay onto rgba
+        alpha = overlay[..., 3:4].astype(np.float32) / 255.0
+        rgba[..., :3] = (
+            overlay[..., :3] * alpha + rgba[..., :3] * (1 - alpha)
+        ).astype(np.uint8)
+
+        self.masked_preview.setImage(rgba)
+        masked_file = image.copy()
+        masked_file[mask] = 255
+        self.masked_file_preview = masked_file
+        pen_color = QtGui.QColor("#C80000")
+        pen_color.setAlpha(200)
+        for y1,x1,y2,x2 in boxes:
+            square = QtWidgets.QGraphicsRectItem(x1, y1, x2-x1, y2-y1)            
+            square.setPen(pg.mkPen(pen_color, width=1))
+
+            self.masked_preview.getView().addItem(square)
+            self._bbox_squares.append(square)
 
         # Restore zoom/pan
         if not initialize:
             view_box.setState(state)
-
         self.update_target_file_size()
+        self.finish_task()
 
     def update_target_file_size(self):
 
@@ -2894,7 +2927,6 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(True)
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
-        
 
     def update_task(self, item):
         self.progress_bar.setValue(item)
