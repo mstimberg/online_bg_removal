@@ -30,8 +30,8 @@ import pyqtgraph as pg
 import PySide6.QtCore as QtCore
 import PySide6.QtGui as QtGui
 import PySide6.QtWidgets as QtWidgets
-import skimage
 import tifffile
+import torch
 import yaml
 from pyqtgraph import RectROI
 from PySide6.QtCore import QLocale, Qt
@@ -687,7 +687,7 @@ class FileReader(QtCore.QRunnable):
                     )
                     if self.frame_shape is None:
                         raise IOError("Could not read file, and this is the first frame")
-                    
+
                     # Create a fake empty frame
                     frame = np.ones(self.frame_shape, dtype=np.uint8) * 255
                     break
@@ -719,11 +719,24 @@ class FileReader(QtCore.QRunnable):
             )
         self.read_queue.task_done(index=self.idx)
 
-def find_cells(frame, model, conf=0.2, iou=0.7, half=False):
-    if frame.ndim == 2:
-        frame = np.broadcast_to(frame[:, :, None], frame.shape + (3,))
-    results = model(frame, imgsz=frame.shape[:2], conf=conf, iou=iou, half=half)
-    return results[0].boxes.xyxy.cpu().numpy()
+
+def find_cells(frames, model, conf=0.2, iou=0.7, half=False):
+    rgb_frames = []
+    for f in frames:
+        if f.ndim == 2:
+            rgb_frames.append(
+                np.broadcast_to(f[:, :, None], f.shape + (3,))
+            )
+        else:
+            rgb_frames.append(f)    
+
+    with torch.no_grad():
+        results = model(rgb_frames, imgsz=frames[0].shape[:2], conf=conf, iou=iou, half=half)
+    boxes = [r.boxes.xyxy.cpu().numpy() for r in results]
+    
+    torch.cuda.empty_cache()
+    return boxes
+
 
 def create_mask(boxes, frame_shape):
     # Mask everything except for the cells
@@ -757,8 +770,96 @@ class YoloBackgroundRemover(QtCore.QThread):
         self._last_idx = -1
         # We store the original file names for later
         self._orig_fnames = {}
-        self.buffer = None        
-        self.model = YOLO(self.inference_params["model_file"])
+        self.buffer = []
+        self.model = YOLO(self.inference_params["model_file"])        
+
+    def handle_frame(self, bounding_boxes, frame, epoch, relative_idx, idx):
+        mask = create_mask(bounding_boxes, frame.shape)
+        masked_frame = frame  # no copy, but we don't use it anymore, do we?
+        masked_frame[mask] = 255
+
+        # We start our file names with 1 for ffmpeg
+        if epoch == -1:
+            filename = os.path.join(
+                "frames", self.bg_params["filename_prefix"] + f"{idx + 1:07d}.tiff"
+            )
+        else:
+            filename = os.path.join(
+                "frames",
+                self.bg_params["filename_prefix"] + f"{epoch:04d}_{relative_idx + 1:07d}.tiff",
+            )
+        logger.debug(
+            f"Background remover: processed frame {idx} ('{filename}')",
+            extra={"index": idx},
+        )
+        self.file_tasks.put(
+            {
+                "type": "frame",
+                "idx": idx,
+                "fname": filename,
+                "frame": masked_frame,
+            }
+        )        
+
+    def handle_buffer(self, idx, epoch, relative_idx):
+        buffer_size = len(self.buffer)
+        try:
+            logger.debug(
+                    f"Finding cells in frames {idx-buffer_size}–{idx}",
+                    extra={"index": idx},
+                )
+            bounding_boxes = find_cells(
+                self.buffer,
+                self.model,
+                conf=self.inference_params["conf_threshold"],
+                iou=self.inference_params["iou"],
+                half=self.inference_params["half_precision"],
+            )
+
+            for i, (orig_frame, bounding_box) in enumerate(
+                zip(self.buffer, bounding_boxes)
+            ):
+                self.handle_frame(
+                    bounding_box,
+                    orig_frame,
+                    epoch,
+                    relative_idx - buffer_size + i + 1,
+                    idx - buffer_size + i + 1,
+                )
+                self.task_queue.task_done(index=idx - buffer_size + i + 1, measure=False)
+            self.buffer.clear()
+
+            if self.video_tasks is not None:
+                logger.debug(
+                    f"Background remover: submitted video task for frames {idx - buffer_size + 1}–{idx}",
+                    extra={"index": idx},
+                )
+                self.video_tasks.put(
+                    {
+                        "idx": idx,
+                        "n_frames": buffer_size,
+                        "epoch": epoch,
+                        "relative_start_idx": relative_idx - buffer_size + 1,
+                        "discard": False,
+                    }
+                )
+        except Exception:
+            logger.exception(
+                "Error while extracting cells in frame", extra={"index": idx}
+            )
+            raise
+
+    def finish_frames(self, epoch, relative_idx_start, final, discard):
+        if not discard:
+            self.handle_buffer(self._last_idx, epoch, relative_idx_start)
+            
+        self.buffer.clear()
+
+        if self.video_tasks is not None:
+            # Request merging of video files
+            self.video_tasks.put(
+                {"stop": True, "final": final, "epoch": epoch, "discard": discard}
+            )
 
     @run_wrapper
     def run(self) -> None:
@@ -784,19 +885,16 @@ class YoloBackgroundRemover(QtCore.QThread):
                 self.thread().msleep(100)
                 continue            
 
-            # TODO no video written in end
             if task["type"] == "stop":
-                self.task_queue.task_done(index=idx)
-                if self.video_tasks is not None:
-                    # Request merging of video files
-                    self.video_tasks.put(
-                        {
-                            "stop": True,
-                            "final": task["final"],
-                            "epoch": task["epoch"],
-                            "discard": task["discard"],
-                        }
+                self.finish_frames(
+                        task["epoch"],
+                        task["epoch_start_idx"],
+                        task["final"],
+                        task["discard"],
                     )
+                self.task_queue.task_done(index=idx, measure=False)
+                self._last_idx = idx
+                
                 if task.get("final", False):
                     # End thread
                     break
@@ -815,71 +913,59 @@ class YoloBackgroundRemover(QtCore.QThread):
             frame = task["frame"]
             epoch = task["epoch"]
             relative_idx = task["relative_idx"]
-
             # The ROI has been "frozen", we only care about this part of the frame from now on
             frame = frame[self.bg_params["roi_slice"]]
             if self.bg_params["dark_field"]:
                 frame = 255 - frame
-            try:
-                logger.debug(
-                        f"Finding cells in frame {idx}",
-                        extra={"index": idx},
+            self.buffer.append(frame)
+
+            buffer_size = self.inference_params["batch_size"]
+            if len(self.buffer) == buffer_size:
+                try:
+                    logger.debug(
+                            f"Finding cells in frames {idx-buffer_size}–{idx}",
+                            extra={"index": idx},
+                        )
+                    bounding_boxes = find_cells(
+                        self.buffer,
+                        self.model,
+                        conf=self.inference_params["conf_threshold"],
+                        iou=self.inference_params["iou"],
+                        half=self.inference_params["half_precision"],
                     )
-                bounding_boxes = find_cells(
-                    frame,
-                    self.model,
-                    conf=self.inference_params["conf_threshold"],
-                    iou=self.inference_params["iou"],
-                    half=self.inference_params["half_precision"],
-                )
-                mask = create_mask(bounding_boxes, frame.shape)
-                masked_frame = frame  # no copy, but we don't use it anymore, do we?
-                masked_frame[mask] = 255
 
-            except Exception:
-                logger.exception(
-                    "Error while extracting cells in frame", extra={"index": idx}
-                )
-                self.task_queue.task_done(index=idx, measure=False)
-                raise
+                    for i, (orig_frame, bounding_box) in enumerate(
+                        zip(self.buffer, bounding_boxes)
+                    ):
+                        self.handle_frame(
+                            bounding_box,
+                            orig_frame,
+                            epoch,
+                            relative_idx - buffer_size + i + 1,
+                            idx - buffer_size + i + 1,
+                        )
+                        self.task_queue.task_done(index=idx - buffer_size + i + 1, measure=False)
+                    self.buffer.clear()
 
-            # We start our file names with 1 for ffmpeg
-            if epoch == -1:
-                filename = os.path.join(
-                    "frames", self.bg_params["filename_prefix"] + f"{idx + 1:07d}.tiff"
-                )
-            else:
-                filename = os.path.join(
-                    "frames",
-                    self.bg_params["filename_prefix"] + f"{epoch:04d}_{relative_idx + 1:07d}.tiff",
-                )
-            self.task_queue.task_done(index=idx)
-            logger.debug(
-                f"Background remover: processed frame {idx} ('{filename}')",
-                extra={"index": idx},
-            )
-            self.file_tasks.put(
-                {
-                    "type": "frame",
-                    "idx": idx,
-                    "fname": filename,
-                    "frame": masked_frame,
-                }
-            )
-            if self.video_tasks is not None:
-                logger.debug(
-                    f"Background remover: submitted video task for frame {self._last_idx}",
-                    extra={"index": self._last_idx},
-                )
-                self.video_tasks.put(
-                    {
-                        "idx": self._last_idx,
-                        "n_frames": 1,
-                        "epoch": epoch,
-                        "relative_start_idx": relative_idx,
-                        "discard": False,
-                    }
-                )
+                    if self.video_tasks is not None:
+                        logger.debug(
+                            f"Background remover: submitted video task for frames {idx - buffer_size + 1}–{idx}",
+                            extra={"index": idx},
+                        )
+                        self.video_tasks.put(
+                            {
+                                "idx": idx,
+                                "n_frames": buffer_size,
+                                "epoch": epoch,
+                                "relative_start_idx": relative_idx - buffer_size + 1,
+                                "discard": False,
+                            }
+                        )
+                except Exception:
+                    logger.exception(
+                        "Error while extracting cells in frame", extra={"index": idx}
+                    )
+                    raise            
 
 class FileWriterThread(QtCore.QThread):
     def __init__(
@@ -1954,12 +2040,17 @@ class ProgressDialog(QtWidgets.QDialog):
         logger.debug("Verifying all queues are empty...")
 
         not_empty = []
-        for task_queue in self.queues.values():
+        for name, task_queue in self.queues.items():
             if not task_queue.empty():
-                not_empty.append(task_queue._name)
+                not_empty.append(name)
 
         if not_empty:
             logger.error(f"Queues {not_empty} are not empty, this should not happen...")
+            for q in not_empty:
+                content = self.queues[q]
+                logger.error(f"{q}: There are still {content.qsize()} entries:")
+                for _ in range(content.qsize()):
+                    logger.error(f"\t{content._queue.get_nowait()}")
         else:
             logger.info("All queues are empty, all good")
             for pb in self.progress_bars.values():
@@ -2200,8 +2291,8 @@ class FindCellsWorker(QtCore.QThread):
         start = time.time()
         
         self.boxes = find_cells(
-            self.image, self.model, conf=self.conf, iou=self.iou, half=self.half,
-        )
+            [self.image], self.model, conf=self.conf, iou=self.iou, half=self.half,
+        )[0]
         self.mask = create_mask(
             self.boxes,
             self.image.shape,
@@ -2849,6 +2940,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             view_box.setState(state)
         self.update_target_file_size()
         self.finish_task()
+        self._find_cells_worker.deleteLater()
 
     def update_target_file_size(self):
 
