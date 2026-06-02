@@ -2432,7 +2432,13 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         )
         self.source_folder_button = QtWidgets.QPushButton(icon=dir_icon)
         self.source_folder_button.setToolTip("Select source folder")
-        self.source_folder_button.clicked.connect(self.select_source_folder)
+        if prev_folder := prev_settings.get("source_folder", None):
+            initial_dir = os.path.abspath(os.path.join(prev_folder, ".."))
+        else:
+            initial_dir = None
+        self.source_folder_button.clicked.connect(
+            lambda _, initial_dir=initial_dir: self.select_source_folder(initial_dir)
+        )
         self.source_folder.editingFinished.connect(self.change_source_folder)
         layout.addWidget(self.source_folder)
         layout.addWidget(self.source_folder_button)
@@ -2952,7 +2958,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         for square in self._bbox_squares:
             self.masked_preview.getView().removeItem(square)
         self._bbox_squares.clear()
-        
+
         current_idx = self.image_preview.currentIndex
         roi_slice = get_roi_slice(self.roi_selector)
         image = np.asarray(self.preview_frames[current_idx])
@@ -3044,8 +3050,10 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             f"Compressed: <b>{readable_size}</b> (factor ~<b>{factor}</b>)"
         )
 
-    def select_source_folder(self):
+    def select_source_folder(self, fallback_folder):
         start_dir = self.source_folder.text()
+        if not start_dir:
+            start_dir = fallback_folder
         folder = QtWidgets.QFileDialog.getExistingDirectory(
             self, "Select source folder", dir=start_dir
         )
