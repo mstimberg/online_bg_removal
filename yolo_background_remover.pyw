@@ -755,7 +755,7 @@ class YoloBackgroundRemover(QtCore.QThread):
         task_queue,
         bg_params,
         file_write_params,
-        inference_params,                
+        inference_params,
         video_queue,
         file_queue,
     ):
@@ -771,7 +771,21 @@ class YoloBackgroundRemover(QtCore.QThread):
         # We store the original file names for later
         self._orig_fnames = {}
         self.buffer = []
-        self.model = YOLO(self.inference_params["model_file"])        
+        self.model = YOLO(self.inference_params["model_file"])
+        self.track_file_queue = QueueWithSignals(
+            queue.Queue(), "Track file writing", parent=self
+        )
+        self.track_file_writer = TrackFileThread(
+            progress_dialog,
+            self.file_write_params["target_folder"],
+            self.track_file_queue,
+            self.file_write_params["fps"],
+            self.inference_params["pixel_size"],
+        )
+
+    def start(self, *args, **kwds):
+        super().start(*args, **kwds)
+        self.track_file_writer.start()
 
     def handle_frame(self, bounding_boxes, frame, epoch, relative_idx, idx):
         mask = create_mask(bounding_boxes, frame.shape)
@@ -815,6 +829,16 @@ class YoloBackgroundRemover(QtCore.QThread):
                 iou=self.inference_params["iou"],
                 half=self.inference_params["half_precision"],
             )
+            # Write results to track file
+            self.track_file_queue.put(
+                {
+                    "idx": idx,
+                    "epoch": epoch,
+                    "relative_start_idx": relative_idx - buffer_size + 1,
+                    "n_frames": buffer_size,
+                    "bounding_boxes": bounding_boxes
+                }
+            )
 
             for i, (orig_frame, bounding_box) in enumerate(
                 zip(self.buffer, bounding_boxes)
@@ -843,23 +867,26 @@ class YoloBackgroundRemover(QtCore.QThread):
                         "discard": False,
                     }
                 )
+
         except Exception:
             logger.exception(
                 "Error while extracting cells in frame", extra={"index": idx}
             )
             raise
+        finally:
+            self.buffer.clear()
 
     def finish_frames(self, epoch, relative_idx_start, final, discard):
         if not discard:
             self.handle_buffer(self._last_idx, epoch, relative_idx_start)
-            
-        self.buffer.clear()
 
         if self.video_tasks is not None:
             # Request merging of video files
             self.video_tasks.put(
                 {"stop": True, "final": final, "epoch": epoch, "discard": discard}
             )
+
+        self.track_file_queue.put({"stop": True, "final": final, "epoch": epoch})
 
     @run_wrapper
     def run(self) -> None:
@@ -894,7 +921,7 @@ class YoloBackgroundRemover(QtCore.QThread):
                     )
                 self.task_queue.task_done(index=idx, measure=False)
                 self._last_idx = idx
-                
+
                 if task.get("final", False):
                     # End thread
                     break
@@ -921,51 +948,7 @@ class YoloBackgroundRemover(QtCore.QThread):
 
             buffer_size = self.inference_params["batch_size"]
             if len(self.buffer) == buffer_size:
-                try:
-                    logger.debug(
-                            f"Finding cells in frames {idx-buffer_size}–{idx}",
-                            extra={"index": idx},
-                        )
-                    bounding_boxes = find_cells(
-                        self.buffer,
-                        self.model,
-                        conf=self.inference_params["conf_threshold"],
-                        iou=self.inference_params["iou"],
-                        half=self.inference_params["half_precision"],
-                    )
-
-                    for i, (orig_frame, bounding_box) in enumerate(
-                        zip(self.buffer, bounding_boxes)
-                    ):
-                        self.handle_frame(
-                            bounding_box,
-                            orig_frame,
-                            epoch,
-                            relative_idx - buffer_size + i + 1,
-                            idx - buffer_size + i + 1,
-                        )
-                        self.task_queue.task_done(index=idx - buffer_size + i + 1, measure=False)
-                    self.buffer.clear()
-
-                    if self.video_tasks is not None:
-                        logger.debug(
-                            f"Background remover: submitted video task for frames {idx - buffer_size + 1}–{idx}",
-                            extra={"index": idx},
-                        )
-                        self.video_tasks.put(
-                            {
-                                "idx": idx,
-                                "n_frames": buffer_size,
-                                "epoch": epoch,
-                                "relative_start_idx": relative_idx - buffer_size + 1,
-                                "discard": False,
-                            }
-                        )
-                except Exception:
-                    logger.exception(
-                        "Error while extracting cells in frame", extra={"index": idx}
-                    )
-                    raise            
+                self.handle_buffer(idx, epoch, relative_idx)
 
 class FileWriterThread(QtCore.QThread):
     def __init__(
@@ -1047,12 +1030,6 @@ class FileWriterThread(QtCore.QThread):
         )
         logger.debug(f"Wrote '{fname}' (with imageio)", extra={"index": idx})
         self.task_queue.task_done(index=idx)
-        if self.track_queue is not None and idx >= 0:
-            logger.debug(
-                "FileWriter: submitted tracking task for file '{fname}'",
-                extra={"index": idx},
-            )
-            self.track_queue.put({"type": "track", "idx": idx, "fname": full_path})
 
     def stop(self):
         self._stop_received += 1
@@ -1399,6 +1376,98 @@ class VideoThread(QtCore.QThread):
         except subprocess.CalledProcessError:
             logger.exception("Could not join movies")
             exception_occured = True
+
+
+class TrackFileThread(QtCore.QThread):
+    def __init__(
+        self,
+        parent,
+        target_dir,
+        track_queue,
+        fps,
+        pixel_size
+    ):
+        super().__init__(parent)
+        self.tracking_dir = os.path.join(target_dir, "tracking")
+        os.makedirs(self.tracking_dir, exist_ok=False)
+        self.track_file_list = []
+        self.track_queue = track_queue
+        self.fps = fps
+        self.pixel_size = pixel_size
+
+    def run(self):
+        global exception_occured
+        threading.current_thread().name = QtCore.QThread.currentThread().objectName()
+        if TRACE:
+            get_tracer().enable_thread_tracing()
+
+        while True:            
+            try:
+                task = self.track_queue.get(timeout=1)
+            except queue.Empty:
+                continue
+            logger.debug("New task for TrackFileThread: " + str(task))
+
+            if task.get('stop', False):
+                logger.info("Received stop signal, merging tracks")
+
+                self.join_tracks(task.get("epoch", -1))
+
+                self.track_queue.task_done(measure=False)
+
+                if task["final"]:
+                    logger.info("Stopping TrackFileThread")
+                    break
+                else:
+                    self.track_file_list.clear()
+                    continue
+
+            last_idx, n_frames, epoch, relative_start_idx, bounding_boxes = (
+                task["idx"],
+                task["n_frames"],
+                task["epoch"],
+                task["relative_start_idx"],
+                task["bounding_boxes"],
+            )
+            if epoch == -1:
+                start_idx = last_idx - n_frames + 1
+            else:
+                start_idx = relative_start_idx - n_frames + 1
+
+            if epoch == -1:
+                fname = os.path.join(self.tracking_dir, f"tracking_unlinked_{self.fps:.01f}_fps_{self.pixel_size:.02f}_um_{start_idx:07d}-{last_idx:07d}.tsv")
+            else:
+                fname = os.path.join(self.tracking_dir, f"tracking_unlinked_{self.fps:.01f}_fps_{self.pixel_size:.02f}_um_{epoch:04d}_{start_idx:07d}-{last_idx:07d}.tsv")
+
+            self.track_file_list.append(fname)
+
+            # We write the file manually, no need to go through pandas
+            with open(fname, "wt") as f:
+                for frame, boxes in enumerate(bounding_boxes):
+                    # No headers for easier merging
+                    for b0, b1, b2, b3 in boxes:
+                        f.write(f"{frame + start_idx}\t{(b0 + b2)/2:.2f}\t{(b1 + b3)/2:.2f}\t{int(b0)}\t{int(b1)}\t{int(b2)}\t{int(b3)}\n")
+            self.track_queue.task_done(last_idx)
+
+        logger.info("TrackFileThread finished")
+
+    def join_tracks(self, epoch):
+        logger.debug("Joining track files")
+        if epoch == -1:
+            fname = os.path.join(self.tracking_dir, f"tracking_unlinked_{self.fps:.01f}_fps_{self.pixel_size:.02f}_um.tsv")
+        else:
+            fname = os.path.join(self.tracking_dir, f"tracking_unlinked_{epoch:04d}_{self.fps:.01f}_fps_{self.pixel_size:.02f}_um.tsv")
+        
+        # Concatenate files
+        with open(fname, "wt") as out_f:
+            # Write header
+            out_f.write("frame\ty\tx\tbbox-0\tbbox-1\tbbox-2\tbbox-3\n")
+            for in_fname in self.track_file_list:
+                with open(in_fname, "rt") as in_f:
+                    shutil.copyfileobj(in_f, out_f)
+        # Delete individual files
+        for in_fname in self.track_file_list:
+            os.remove(in_fname)
 
 
 def log_namer(name):
@@ -2485,6 +2554,20 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         layout.addWidget(self.half_precision)
         model_group_layout.addLayout(layout)
 
+        layout = QtWidgets.QHBoxLayout()
+        pixel_size_label = QtWidgets.QLabel("&Pixel size (µm): ")
+        self.pixel_size = QtWidgets.QDoubleSpinBox()
+        self.pixel_size.setMinimum(0.01)
+        self.pixel_size.setMaximum(1000)
+        self.pixel_size.setSingleStep(0.01)
+        self.pixel_size.setValue(prev_settings.get("inference", {}).get("pixel_size", 5.06))
+        self.pixel_size.setKeyboardTracking(False)
+        pixel_size_label.setBuddy(self.pixel_size)
+
+        layout.addWidget(pixel_size_label)
+        layout.addWidget(self.pixel_size)
+        model_group_layout.addLayout(layout)
+
         controls_layout.addWidget(model_group)
 
         controls_layout.addStretch()
@@ -2804,6 +2887,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             "iou": self.iou.value(),
             "half_precision": self.half_precision.isChecked(),
             "batch_size": self.batch_size.value(),
+            "pixel_size": self.pixel_size.value(), 
         }
         dialog = ProgressDialog(
             self,
