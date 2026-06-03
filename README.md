@@ -50,7 +50,7 @@ $ pixi run gui
 ```
 or (to use GPU acceleration)
 ```
-$ pixi run -e pixi-gpu gui
+$ pixi run -e gpu gui
 ```
 The first run will set up a conda environment and install the dependencies, later runs will re-use the existing environment.
 
@@ -68,7 +68,7 @@ $ uv run background_remover.pyw
 ```
 or (to use GPU acceleration)
 ```
-$ uv run --group gpu background_remover.pyw
+$ uv run --extra gpu background_remover.pyw
 ```
 The first run will set up a virtual environment and install the dependencies, later runs will re-use the existing environment.
 

@@ -19,13 +19,17 @@ dependencies = [
     "watchdog>=6.0.0",
 ]
 
-[dependency-groups]
+[project.optional-dependencies]
 gpu = [
     "cupy-cuda12x>=13.3.0",
 ]
+yolo = [
+    "cupy-cuda12x>=13.3.0",
+    "ultralytics>=8.4.54",
+]
 
 [tool.pixi.workspace]
-channels = ["conda-forge"]
+channels = ["nvidia/label/cuda-12.4.1", "nvidia", "conda-forge", "pytorch"]
 platforms = ["linux-64", "win-64", "osx-arm64"]
 
 [tool.pixi.dependencies]
@@ -62,23 +66,38 @@ LD_LIBRARY_PATH = "$LD_LIBRARY_PATH:$CONDA_PREFIX/lib"
 [tool.pixi.target.linux-64.dependencies]
 qt6-gtk-platformtheme = ">=6.7.2,<7"
 
-[tool.pixi.feature.pixi-gpu.dependencies]
-cudatoolkit = ">=11.2,<12"
-cudnn = "8.*"
-cuda-version = ">=11.2,<12"
-cupy = ">=12.2.0,<13"
-
 [tool.pixi.feature.pixi-gpu]
 platforms = ["linux-64", "win-64"]
 
+[tool.pixi.feature.pixi-gpu.dependencies]
+cupy = ">=13.3.0"
+cuda = {version = "*", channel="nvidia/label/cuda-12.4.1"}
+pytorch = {version = "*", channel="pytorch"}
+torchvision = {version = "*", channel="pytorch"}
+pytorch-cuda = {version = "12.4.*", channel="pytorch"}
+
 [tool.pixi.feature.pixi-gpu.system-requirements]
-cuda = "11.2"
+cuda = "12"
+
+[tool.pixi.feature.pixi-yolo.dependencies]
+ultralytics = "=8.4.60"
+
+[tool.pixi.feature.pixi-yolo.pypi-dependencies]
+tensorrt-cu12 =">=7.0.0,!=10.2.0"
+onnx = ">=1.12.0,<2.0.0"
+onnxslim = ">=0.1.71"
+onnxruntime-gpu = "*"
+
+[tool.pixi.feature.pixi-yolo.pypi-options]
+index-url = "https://pypi.nvidia.com"
+extra-index-urls = ["https://pypi.org/simple"]
+
 
 [tool.pixi.environments]
 tf = ["tf"]
 tf-gpu = ["tf", "pixi-gpu"]
 gpu = ["pixi-gpu"]
+yolo = ["pixi-gpu", "pixi-yolo"]
 
 [tool.pixi.tasks]
 gui = "python background_remover.pyw"
-
