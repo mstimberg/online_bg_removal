@@ -721,14 +721,7 @@ class FileReader(QtCore.QRunnable):
 
 
 def find_cells(frames, model, conf=0.2, iou=0.7, half=False):
-    rgb_frames = []
-    for f in frames:
-        if f.ndim == 2:
-            rgb_frames.append(
-                np.broadcast_to(f[:, :, None], f.shape + (3,))
-            )
-        else:
-            rgb_frames.append(f)    
+    rgb_frames = [np.broadcast_to(f[:, :, None], f.shape + (3,)) for f in frames] 
 
     with torch.no_grad():
         results = model(rgb_frames, imgsz=frames[0].shape[:2], conf=conf, iou=iou, half=half)
@@ -817,6 +810,9 @@ class YoloBackgroundRemover(QtCore.QThread):
 
     def handle_buffer(self, idx, epoch, relative_idx):
         buffer_size = len(self.buffer)
+        if buffer_size == 0:
+            return  # nothing to do
+
         try:
             logger.debug(
                     f"Finding cells in frames {idx-buffer_size}–{idx}",
