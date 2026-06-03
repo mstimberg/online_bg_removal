@@ -372,7 +372,7 @@ def get_roi_slice(roi_selector):
                 int(roi_selector.pos()[ax]),
                 int(roi_selector.pos()[ax] + roi_selector.size()[ax]),
             )
-            for ax in [1, 0]
+            for ax in [0, 1]  # TODO, different from background_remover.pyw
         ]
     )
 
@@ -724,6 +724,7 @@ def find_cells(frames, model, conf=0.2, iou=0.7, half=False):
     rgb_frames = [np.broadcast_to(f[:, :, None], f.shape + (3,)) for f in frames] 
 
     with torch.no_grad():
+        print("frame shape", frames[0].shape)
         results = model(rgb_frames, imgsz=frames[0].shape[:2], conf=conf, iou=iou, half=half)
     boxes = [r.boxes.xyxy.cpu().numpy() for r in results]
     
@@ -1021,7 +1022,7 @@ class FileWriterThread(QtCore.QThread):
         # libtiff seems to be slower for writing than imageio…
         write_image(
             full_path,
-            array,
+            array.T,  # TODO: different from background_remover.pyw
             compression=self.compression_algorithm,
         )
         logger.debug(f"Wrote '{fname}' (with imageio)", extra={"index": idx})
@@ -2798,7 +2799,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             frame = read_function(full_path)
         else:
             frame = read_image_imageio(full_path)
-        y, x = frame.shape        
+        y, x = frame.shape
 
         self.start_task("Reading files", n_frames)
         total_size = 0
@@ -2922,17 +2923,22 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         else:
             prev_roi_pos = prev_roi_size = None
 
+        snap_size = 32
+
         if images[0].shape == self.prev_size and prev_roi_pos:
             pos = prev_roi_pos
             size = prev_roi_size
         else:
-            pos = (0, 0)
-            size = (images.shape[1], images.shape[2])
+            width, height = images.shape[1], images.shape[2]
+            excess_width, excess_height = width % snap_size, height % snap_size
+            pos = (excess_width//2, excess_height//2)            
+            size = width-excess_width, height-excess_height
+            print("initial pos/size", pos, size)
         self.roi_selector = RectROI(
             pos,
             size,
             pen=(0, 9),
-            snapSize=16,
+            snapSize=snap_size,
             translateSnap=True,
             scaleSnap=True,
             maxBounds=QtCore.QRectF(0, 0, images.shape[1], images.shape[2]),
