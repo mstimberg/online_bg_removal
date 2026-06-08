@@ -36,6 +36,7 @@ import yaml
 from pyqtgraph import RectROI
 from PySide6.QtCore import QLocale, Qt
 from ultralytics import YOLO
+from ultralytics.models.yolo.detect.predict import DetectionPredictor
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
@@ -719,25 +720,24 @@ class FileReader(QtCore.QRunnable):
             )
         self.read_queue.task_done(index=self.idx)
 
-
-def find_cells(frames, model, conf=0.2, iou=0.7, half=False):
-    rgb_frames = [np.broadcast_to(f[:, :, None], f.shape + (3,)) for f in frames] 
-
-    with torch.no_grad():
-        print("frame shape", frames[0].shape)
-        results = model(rgb_frames, imgsz=frames[0].shape[:2], conf=conf, iou=iou, half=half)
-    boxes = [r.boxes.xyxy.cpu().numpy() for r in results]
-    
-    torch.cuda.empty_cache()
-    return boxes
-
-
 def create_mask(boxes, frame_shape):
     # Mask everything except for the cells
     mask = np.ones(frame_shape, dtype=bool)
     for x1, y1, x2, y2 in boxes:
         mask[int(y1):int(y2), int(x1):int(x2)] = False
     return mask
+
+class OptimizedDetectionPredictor(DetectionPredictor):    
+    def preprocess(self, im: torch.Tensor | list[np.ndarray]) -> torch.Tensor:
+        # Slightly optimized for grayscale images of fixed size.
+        im = np.stack(im)
+        im = torch.from_numpy(im[..., 0]).to(self.model.device)
+        im = im[:, None].expand(-1, 3, -1, -1) # (B, 3, H, W) — zero-copy view on GPU
+        if self.args.half:
+            im = im.half() / 255
+        else:        
+            im = im.float() / 255
+        return im
 
 class YoloBackgroundRemover(QtCore.QThread):
     frame_processed = QtCore.Signal(int, str, np.ndarray)
@@ -765,7 +765,18 @@ class YoloBackgroundRemover(QtCore.QThread):
         # We store the original file names for later
         self._orig_fnames = {}
         self.buffer = []
-        self.model = YOLO(self.inference_params["model_file"])
+        self.model = YOLO(self.inference_params["model_file"], task="detect")
+        self.predictor = OptimizedDetectionPredictor(
+            overrides={
+                "conf": self.inference_params["conf_threshold"],
+                "half": self.inference_params["half_precision"],
+                "batch": self.inference_params["batch_size"],
+                "save": False,
+                "rect": False,
+            }
+        )
+        self.predictor.setup_model(self.model.model, verbose=False)
+        self.model.predictor = self.predictor
         self.track_file_queue = QueueWithSignals(
             queue.Queue(), "Track file writing", parent=self
         )
@@ -780,6 +791,20 @@ class YoloBackgroundRemover(QtCore.QThread):
     def start(self, *args, **kwds):
         super().start(*args, **kwds)
         self.track_file_writer.start()
+
+    def find_cells(self, frames, conf=0.2, iou=0.7, half=False):    
+        with torch.no_grad():
+            results = self.model.predict(
+                frames,
+                imgsz=frames[0].shape[:2],
+                conf=conf,
+                iou=iou,
+                half=half,
+            )
+        boxes = [r.boxes.xyxy.cpu().numpy() for r in results]
+
+        torch.cuda.empty_cache()
+        return boxes
 
     def handle_frame(self, bounding_boxes, frame, epoch, relative_idx, idx):
         mask = create_mask(bounding_boxes, frame.shape)
@@ -819,9 +844,8 @@ class YoloBackgroundRemover(QtCore.QThread):
                     f"Finding cells in frames {idx-buffer_size}–{idx}",
                     extra={"index": idx},
                 )
-            bounding_boxes = find_cells(
+            bounding_boxes = self.find_cells(
                 self.buffer,
-                self.model,
                 conf=self.inference_params["conf_threshold"],
                 iou=self.inference_params["iou"],
                 half=self.inference_params["half_precision"],
@@ -2355,10 +2379,16 @@ class FindCellsWorker(QtCore.QThread):
 
     def run(self):
         start = time.time()
-        
-        self.boxes = find_cells(
-            [self.image], self.model, conf=self.conf, iou=self.iou, half=self.half,
-        )[0]
+        rgb_frame = np.broadcast_to(self.image[:, :, None], self.image.shape + (3,))
+        with torch.no_grad():
+            results = self.model(
+                [rgb_frame],
+                imgsz=self.image.shape[:2],
+                conf=self.conf,
+                iou=self.iou,
+                half=self.half,
+            )
+        self.boxes = results[0].boxes.xyxy.cpu().numpy()
         self.mask = create_mask(
             self.boxes,
             self.image.shape,
