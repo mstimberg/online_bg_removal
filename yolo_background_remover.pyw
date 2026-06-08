@@ -751,6 +751,49 @@ class OptimizedDetectionPredictor(DetectionPredictor):
             result.masked_image = im[0].mul(255).to(torch.uint8)
         return results
 
+
+def export_tensorrt_engine_with_progress(parent, model, roi_size, half, batch_size):
+    """Export a YOLO model to TensorRT while keeping the UI responsive."""
+    progress = QtWidgets.QDialog(parent)
+    progress.setWindowTitle("Preparing TensorRT model")
+    progress.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+    progress.setModal(True)
+    progress.setMinimumWidth(380)
+    layout = QtWidgets.QVBoxLayout(progress)
+    layout.addWidget(
+        QtWidgets.QLabel("Exporting TensorRT engine. This can take a while...")
+    )
+    bar = QtWidgets.QProgressBar()
+    bar.setRange(0, 0)
+    layout.addWidget(bar)
+
+    result = {}
+    error = {}
+
+    def _do_export():
+        try:
+            result["exported_file"] = model.export(
+                format="engine",
+                imgsz=roi_size,
+                half=half,
+                nms=True,
+                batch=batch_size,
+            )
+        except Exception as ex:
+            error["exception"] = ex
+
+    worker = threading.Thread(target=_do_export, name="TensorRTExport", daemon=True)
+    worker.start()
+    progress.show()
+    while worker.is_alive():
+        QtWidgets.QApplication.processEvents()
+        time.sleep(0.05)
+    progress.close()
+
+    if "exception" in error:
+        raise error["exception"]
+    return result["exported_file"]
+
 class YoloBackgroundRemover(QtCore.QThread):
     frame_processed = QtCore.Signal(int, str, np.ndarray)
     preview_image = QtCore.Signal(str, np.ndarray, np.ndarray)
@@ -777,7 +820,25 @@ class YoloBackgroundRemover(QtCore.QThread):
         # We store the original file names for later
         self._orig_fnames = {}
         self.buffer = []
-        self.model = YOLO(self.inference_params["model_file"], task="detect")
+        model = YOLO(self.inference_params["model_file"], task="detect")
+
+        if inference_params["tensorRT"] and not inference_params["model_file"].endswith(".engine"):
+            roi_slice = self.bg_params["roi_slice"]
+            roi_size = (
+                roi_slice[0].stop - roi_slice[0].start,
+                roi_slice[1].stop - roi_slice[1].start,
+            )
+            exported_file = export_tensorrt_engine_with_progress(
+                progress_dialog,
+                model,
+                roi_size,
+                self.inference_params["half_precision"],
+                self.inference_params["batch_size"],
+            )
+            self.model = YOLO(exported_file, task="detect")
+        else:
+            self.model = model
+
         self.predictor = OptimizedDetectionPredictor(
             overrides={
                 "conf": self.inference_params["conf_threshold"],
@@ -2394,7 +2455,6 @@ class FindCellsWorker(QtCore.QThread):
         super().__init__()
 
     def run(self):
-        start = time.time()
         rgb_frame = np.broadcast_to(self.image[:, :, None], self.image.shape + (3,))
         with torch.no_grad():
             results = self.model(
@@ -2408,8 +2468,7 @@ class FindCellsWorker(QtCore.QThread):
         self.mask = create_mask(
             self.boxes,
             self.image.shape,
-        )        
-        self.took = time.time() - start
+        )
         self.finished.emit()
 
 # Inherit from Qt window
@@ -2539,8 +2598,6 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self.model_file = QtWidgets.QLineEdit()
         self.model_file.setPlaceholderText("Model weights file")
         self.model_file.setText(prev_settings.get("inference", {}).get("model_file", ""))
-        if self.model_file.text():
-            self.change_model_file()
         file_icon = self.style().standardIcon(
             QtWidgets.QStyle.StandardPixmap.SP_FileIcon
         )
@@ -2599,8 +2656,17 @@ class FileCompressorGui(QtWidgets.QMainWindow):
 
         self.half_precision = QtWidgets.QCheckBox("&Half precision: ")        
         self.half_precision.setChecked(prev_settings.get("inference", {}).get("half_precision", False))        
-        self.half_precision.checkStateChanged.connect(lambda value: self.update_masked())        
+        self.half_precision.checkStateChanged.connect(lambda value: self.update_masked())
         layout.addWidget(self.half_precision)
+        model_group_layout.addLayout(layout)
+
+        self.use_tensorRT = QtWidgets.QCheckBox("Use &TensorRT: ")
+        self._prev_use_tensorRT = prev_settings.get("inference", {}).get("tensorRT", False)
+        self.use_tensorRT.setChecked(self._prev_use_tensorRT)
+        self.use_tensorRT.checkStateChanged.connect(
+            lambda value: setattr(self, "_prev_use_tensorRT", value)
+        )
+        layout.addWidget(self.use_tensorRT)
         model_group_layout.addLayout(layout)
 
         layout = QtWidgets.QHBoxLayout()
@@ -2618,6 +2684,9 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         model_group_layout.addLayout(layout)
 
         controls_layout.addWidget(model_group)
+
+        if self.model_file.text():
+            self.change_model_file()
 
         controls_layout.addStretch()
 
@@ -2937,6 +3006,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             "half_precision": self.half_precision.isChecked(),
             "batch_size": self.batch_size.value(),
             "pixel_size": self.pixel_size.value(), 
+            "tensorRT": self.use_tensorRT.isChecked(),
         }
         dialog = ProgressDialog(
             self,
@@ -3040,12 +3110,11 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         boxes = self._find_cells_worker.boxes
         mask = self._find_cells_worker.mask
         image = self._find_cells_worker.image
-        took = self._find_cells_worker.took
         initialize = self._find_cells_worker.initialize
         if not initialize:
             view_box = self.masked_preview.getImageItem().getViewBox()
             state = view_box.getState()
-        self.cell_label.setText(f"Found {len(boxes)} cells in {took*1000:.0f}ms")
+        self.cell_label.setText(f"Found {len(boxes)} cells.")
 
         # Build an RGBA composite: original image + semi-transparent mask overlay
         rgba = np.zeros((*image.shape, 4), dtype=np.uint8)
@@ -3143,6 +3212,15 @@ class FileCompressorGui(QtWidgets.QMainWindow):
     def change_model_file(self):
         fname = self.model_file.text()
         self.inference_model = YOLO(fname)
+        if fname.endswith(".engine"):
+            _prev_use_tensorRT = self.use_tensorRT.isChecked()
+            self.use_tensorRT.setChecked(True)
+            self.use_tensorRT.setEnabled(False)
+            self._prev_use_tensorRT = _prev_use_tensorRT
+        else:
+            if not self.use_tensorRT.isEnabled():
+                self.use_tensorRT.setEnabled(True)
+                self.use_tensorRT.setChecked(self._prev_use_tensorRT)
         self.update_masked()
 
     def select_target_folder(self):
