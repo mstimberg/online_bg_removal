@@ -738,6 +738,18 @@ class OptimizedDetectionPredictor(DetectionPredictor):
         else:        
             im = im.float() / 255
         return im
+    
+    def postprocess(self, preds, img, orig_imgs, **kwargs):
+        results = super().postprocess(preds, img, orig_imgs, **kwargs)
+        # Create masks
+        for im, result in zip(img, results):
+            mask = torch.ones(result.orig_shape, dtype=bool, device=self.device)
+            for x1, y1, x2, y2 in result.boxes.xyxy:
+                mask[int(y1):int(y2), int(x1):int(x2)] = False
+            im[0][mask] = 1.0
+            result.masks = mask
+            result.masked_image = im[0].mul(255).to(torch.uint8)
+        return results
 
 class YoloBackgroundRemover(QtCore.QThread):
     frame_processed = QtCore.Signal(int, str, np.ndarray)
@@ -801,16 +813,18 @@ class YoloBackgroundRemover(QtCore.QThread):
                 iou=iou,
                 half=half,
             )
-        boxes = [r.boxes.xyxy.cpu().numpy() for r in results]
+        results = [
+            {
+                "boxes": r.boxes.xyxy.cpu().numpy(),
+                "masked_image": r.masked_image.cpu().numpy(),
+            }
+            for r in results
+        ]
 
         torch.cuda.empty_cache()
-        return boxes
+        return results
 
-    def handle_frame(self, bounding_boxes, frame, epoch, relative_idx, idx):
-        mask = create_mask(bounding_boxes, frame.shape)
-        masked_frame = frame  # no copy, but we don't use it anymore, do we?
-        masked_frame[mask] = 255
-
+    def handle_frame(self, masked_image, frame, epoch, relative_idx, idx):        
         # We start our file names with 1 for ffmpeg
         if epoch == -1:
             filename = os.path.join(
@@ -830,7 +844,7 @@ class YoloBackgroundRemover(QtCore.QThread):
                 "type": "frame",
                 "idx": idx,
                 "fname": filename,
-                "frame": masked_frame,
+                "frame": masked_image,
             }
         )        
 
@@ -844,12 +858,14 @@ class YoloBackgroundRemover(QtCore.QThread):
                     f"Finding cells in frames {idx-buffer_size}–{idx}",
                     extra={"index": idx},
                 )
-            bounding_boxes = self.find_cells(
+            results = self.find_cells(
                 self.buffer,
                 conf=self.inference_params["conf_threshold"],
                 iou=self.inference_params["iou"],
                 half=self.inference_params["half_precision"],
             )
+            bounding_boxes = [r["boxes"] for r in results]
+            masked_images = [r["masked_image"] for r in results]
             # Write results to track file
             self.track_file_queue.put(
                 {
@@ -861,11 +877,11 @@ class YoloBackgroundRemover(QtCore.QThread):
                 }
             )
 
-            for i, (orig_frame, bounding_box) in enumerate(
-                zip(self.buffer, bounding_boxes)
+            for i, (orig_frame, masked_image) in enumerate(
+                zip(self.buffer, masked_images)
             ):
                 self.handle_frame(
-                    bounding_box,
+                    masked_image,
                     orig_frame,
                     epoch,
                     relative_idx - buffer_size + i + 1,
