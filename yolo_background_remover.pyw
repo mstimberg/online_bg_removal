@@ -3,6 +3,7 @@ Script that watches a folder of files, removes the background and saves them as 
 folder). The input file names need to have filenames ending in consecutive numbers.
 """
 
+import concurrent
 import glob
 import gzip
 import io
@@ -40,12 +41,11 @@ from ultralytics.models.yolo.detect.predict import DetectionPredictor
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-from image_processing.regionprops import (
-    determine_images,
-    determine_labels,
-    extract_properties,
+from image_processing.trajectory_analysis import (
+    calculate_features,
+    mark_avoiding_reactions_from_motion,
+    segments_from_table,
 )
-from image_processing.tracker import Tracker
 
 DEFAULT_MIN_AREA = 400
 DEFAULT_MAX_AREA = 12500
@@ -807,6 +807,8 @@ class YoloBackgroundRemover(QtCore.QThread):
         inference_params,
         video_queue,
         file_queue,
+        link_tracks,
+        track_settings,        
     ):
         super().__init__(parent=progress_dialog)
         self.progress_dialog = progress_dialog
@@ -814,6 +816,8 @@ class YoloBackgroundRemover(QtCore.QThread):
         self.bg_params = bg_params
         self.file_write_params = file_write_params        
         self.inference_params = dict(inference_params)
+        self.link_tracks = link_tracks
+        self.track_settings = track_settings
         self.video_tasks = video_queue
         self.file_tasks = file_queue
         self._last_idx = -1
@@ -857,8 +861,10 @@ class YoloBackgroundRemover(QtCore.QThread):
             progress_dialog,
             self.file_write_params["target_folder"],
             self.track_file_queue,
-            self.file_write_params["fps"],
-            self.inference_params["pixel_size"],
+            link_tracks=self.link_tracks,
+            track_settings=self.track_settings,
+            fps=self.file_write_params["fps"],
+            pixel_size=self.track_settings["pixel_size"],
         )
 
     def start(self, *args, **kwds):
@@ -1482,6 +1488,8 @@ class TrackFileThread(QtCore.QThread):
         parent,
         target_dir,
         track_queue,
+        link_tracks,
+        track_settings,
         fps,
         pixel_size
     ):
@@ -1490,6 +1498,8 @@ class TrackFileThread(QtCore.QThread):
         os.makedirs(self.tracking_dir, exist_ok=False)
         self.track_file_list = []
         self.track_queue = track_queue
+        self.link = link_tracks
+        self.track_settings = track_settings
         self.fps = fps
         self.pixel_size = pixel_size
 
@@ -1567,6 +1577,94 @@ class TrackFileThread(QtCore.QThread):
         for in_fname in self.track_file_list:
             os.remove(in_fname)
 
+        if self.link:
+            self.link_tracks(epoch, fname)
+
+
+    def link_tracks(self, epoch, tracking_fname):
+        track_folder = os.path.dirname(tracking_fname)
+        cells_df = pd.read_csv(tracking_fname, sep="\t")
+        try:
+            logger.info(f"Linking tracks for epoch {epoch}")
+            linked = self.link_wrapper(cells_df)                
+            if self.track_settings["movement_features"]:
+                segments = segments_from_table(linked)
+                logger.debug(f"Calculating features over {len(segments)} segments")
+                with concurrent.futures.ProcessPoolExecutor() as executor:
+                    segments = executor.map(calculate_features, segments)
+                    segments = executor.map(mark_avoiding_reactions_from_motion, segments)
+                linked = pd.concat(segments)
+                linked.sort_values(by='frame')
+                logger.debug("Finished calculating features")
+                if epoch != -1:
+                    linked_fname = os.path.join(track_folder, f"tracking_{epoch:07d}_linked_with_features_{self.fps:.1f}_fps_1_um.tsv")
+                else:
+                    linked_fname = os.path.join(track_folder, f"tracking_linked_with_features_{self.fps:.1f}_fps_1_um.tsv")
+            else:
+                if epoch != -1:
+                    linked_fname = os.path.join(track_folder, f"tracking_{epoch:07d}_linked_{self.fps:.1f}_fps_1_um.tsv")
+                else:
+                    linked_fname = os.path.join(track_folder, f"tracking_linked_{self.fps:.1f}_fps_1_um.tsv")
+            # ↑ Note that the filename states 1_um, since linked tracks are already scaled to µm
+            if self.track_settings["zip_tracking_file"]:
+                linked_fname += ".gz"
+            linked.to_csv(linked_fname, sep="\t", index=False, float_format="%.2f")
+            logger.info(f"linking tracks for epoch {epoch} done, linked tracks saved to {linked_fname}")
+        except Exception:
+            logger.exception(f"Linking tracks for epoch {epoch} failed")
+
+    def link_wrapper(self, df):
+        package = self.track_settings["package"]
+        settings = dict(self.track_settings[package])
+        # Preparations common to all packages
+        # 1. Scale the coordinates and lengths to µm
+        df[["x", "y", "bbox-0", "bbox-1", "bbox-2", "bbox-3"]] *= self.pixel_size
+        if "length" in df.columns:
+            df[["length", "width"]] *= self.pixel_size
+
+        # 2. Convert search range and memory to µm and frames
+        search_range = settings["maximum_speed"] / self.fps
+        memory = int(round(settings["memory"] * self.fps))
+        del settings["maximum_speed"]
+        del settings["memory"]
+        if package == "trackpy":
+            import trackpy as tp
+            if settings["adaptive_stop"] == 0:
+                adaptive_stop = None
+            else:
+                adaptive_stop = settings["adaptive_stop"] / self.fps
+            del settings["adaptive_stop"]
+            logger.info(
+                f"Linking tracks with Trackpy, search_range={search_range}, memory={memory}, adaptive_stop={adaptive_stop}, {' '.join(f'{k}={v}' for k, v in settings.items())}"
+            )
+            result = tp.link(df, search_range=search_range, memory=memory, adaptive_stop=adaptive_stop, **settings)
+            result.rename(columns={"particle": "id"}, inplace=True)
+
+        elif package == "norfair":
+            import norfair
+            initialization_delay = int(round(settings["initialization_delay"] * self.fps))
+            del settings["initialization_delay"]
+            logger.info(f"Linking tracks with Norfair, distance_threshold={search_range}, hit_counter_max={memory}, initialization_delay={initialization_delay}, {' '.join(f'{k}={v}' for k, v in settings.items())}")
+            tracker = norfair.Tracker(
+                distance_function="mean_euclidean",
+                distance_threshold=search_range,
+                initialization_delay=initialization_delay,
+                hit_counter_max=memory,
+            )
+            output = []
+            for frame, rows in df.groupby('frame'):
+                norfair_detections = [norfair.Detection(points=np.array([row['x'], row['y']]), data=row) for _, row in rows.iterrows()]
+                tracked_objects = tracker.update(detections=norfair_detections)
+                for object in tracked_objects:
+                    last_detection = object.last_detection.data
+                    if last_detection['frame'] == frame: ## the last detection could be far in the past
+                        row = last_detection.to_dict()
+                        row.update({'id' : object.id})
+                        output.append(row)
+            result = pd.DataFrame(output)
+        else:
+            raise ValueError(f"Unknown tracking package '{package}'")
+        return result
 
 def log_namer(name):
     return name + ".gz"
@@ -1689,6 +1787,8 @@ class ProgressDialog(QtWidgets.QDialog):
         fileno_step,      
         inference_params,
         record_video,
+        link_tracks,
+        track_settings,
         read_function,
         schedule,
         archive_compressed_files,
@@ -1732,6 +1832,8 @@ class ProgressDialog(QtWidgets.QDialog):
         self.estimated_framerate = 0
         self.inference_params = inference_params
         self.record_video = record_video
+        self.link_tracks = link_tracks
+        self.track_settings = track_settings
         self.bg_params = bg_params
         self.file_write_params = file_write_params
         self.fileno_offset = fileno_offset
@@ -1952,6 +2054,8 @@ class ProgressDialog(QtWidgets.QDialog):
             inference_params=self.inference_params,
             video_queue=self.video_queue,
             file_queue=self.file_write_queue,
+            link_tracks=self.link_tracks,
+            track_settings=self.track_settings,
         )
         wait_for = 1
         if self.video_thread:
@@ -2013,8 +2117,13 @@ class ProgressDialog(QtWidgets.QDialog):
             "filename_prefix": self.bg_params["filename_prefix"],
             "archive_compressed_files": self.archive_compressed_files,
             "read_function": self.read_function.__name__,
-            "inference": self.inference_params,
+            "inference": self.inference_params,            
         }
+        if self.link_tracks:
+            settings["tracking"] = {
+                "link_tracks": True,
+                **self.track_settings,
+            }
         
         settings.update(self.file_write_params)
         if self.schedule:
@@ -2670,6 +2779,34 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         )
         layout.addWidget(self.use_tensorRT)
         model_group_layout.addLayout(layout)
+        controls_layout.addWidget(model_group)
+
+        tracking_group = QtWidgets.QGroupBox("Tracking")
+        tracking_layout = QtWidgets.QVBoxLayout()
+        tracking_group.setLayout(tracking_layout)
+        link_track_layout = QtWidgets.QHBoxLayout()
+        self.link_tracks = QtWidgets.QCheckBox("&Link tracks")
+        self.link_tracks.setChecked("link_tracks" in prev_settings.get("tracking", {}) and prev_settings["tracking"]["link_tracks"])
+        link_track_layout.addWidget(self.link_tracks)
+        settings_icon = self.style().standardIcon(
+            QtWidgets.QStyle.StandardPixmap.SP_FileDialogDetailedView
+        )
+        self.track_settings_button = QtWidgets.QPushButton(icon=settings_icon)
+        self.track_settings_button.setToolTip("Track settings")
+        link_track_layout.addWidget(self.track_settings_button)
+        self.default_track_settings = dict(DEFAULT_TRACK_SETTINGS)
+        self.track_settings_button.clicked.connect(self.show_track_settings)
+
+        self.track_settings = {'package': prev_settings.get("tracking", {}).get("package", self.default_track_settings['package'])}
+        for package in self.default_track_settings['packages']:
+            # Initialize with default settings
+            self.track_settings[package] = {}
+            for key in self.default_track_settings['packages'][package]:                
+                self.track_settings[package][key] = self.default_track_settings['packages'][package][key].default
+                if key in prev_settings.get("tracking", {}).get(package, {}):
+                    self.track_settings[package][key] = prev_settings["tracking"][package][key]
+        
+        tracking_layout.addLayout(link_track_layout)
 
         layout = QtWidgets.QHBoxLayout()
         pixel_size_label = QtWidgets.QLabel("&Pixel size (µm): ")
@@ -2677,15 +2814,23 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self.pixel_size.setMinimum(0.01)
         self.pixel_size.setMaximum(1000)
         self.pixel_size.setSingleStep(0.01)
-        self.pixel_size.setValue(prev_settings.get("inference", {}).get("pixel_size", 5.06))
+        self.pixel_size.setValue(prev_settings.get("tracking", {}).get("pixel_size", 5.06))
         self.pixel_size.setKeyboardTracking(False)
-        pixel_size_label.setBuddy(self.pixel_size)
+        pixel_size_label.setBuddy(self.pixel_size)        
 
         layout.addWidget(pixel_size_label)
         layout.addWidget(self.pixel_size)
-        model_group_layout.addLayout(layout)
+        tracking_layout.addLayout(layout)
 
-        controls_layout.addWidget(model_group)
+        self.movement_features = QtWidgets.QCheckBox("&Movement features")
+        self.movement_features.setChecked(prev_settings.get("tracking", {}).get("movement_features", True))
+        tracking_layout.addWidget(self.movement_features)
+
+        self.zip_tracking_file = QtWidgets.QCheckBox("&Zip file")
+        self.zip_tracking_file.setChecked(prev_settings.get("tracking", {}).get("zip_tracking_file", True))
+        tracking_layout.addWidget(self.zip_tracking_file)
+        
+        controls_layout.addWidget(tracking_group)
 
         if self.model_file.text():
             self.change_model_file()
@@ -2808,6 +2953,46 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         if directory is not None:
             self.source_folder.setText(directory)
             self.source_folder.editingFinished.emit()
+
+    def show_track_settings(self):
+        dialog = QtWidgets.QDialog(parent=self)
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok|QtWidgets.QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        dialog.setWindowTitle("Link settings")
+        dialog.setModal(True)
+        dialog.setLayout(QtWidgets.QVBoxLayout())
+        # Combobox for selecting the tracking algorithm
+        tracking_label = QtWidgets.QLabel("&Tracking algorithm")
+        tracking_algorithm = QtWidgets.QComboBox()
+        tracking_algorithm.addItems(self.default_track_settings['packages'].keys())
+        tracking_algorithm.setCurrentText(self.track_settings['package'])
+        tracking_label.setBuddy(tracking_algorithm)
+        dialog.layout().addWidget(tracking_label)
+
+        # Add group box for other settings
+        settings_group = QtWidgets.QGroupBox("Settings")
+        settings_layout = QtWidgets.QStackedLayout()
+        setting_widgets = {}
+        for package in self.default_track_settings['packages']:
+            settings = self.default_track_settings['packages'][package]
+            setting_values = self.track_settings[package]
+            widget = SettingGUI(settings, setting_values)
+            setting_widgets[package] = widget
+            settings_layout.addWidget(widget)
+        settings_group.setLayout(settings_layout)
+
+        settings_layout.setCurrentIndex(tracking_algorithm.currentIndex())
+        tracking_algorithm.activated.connect(settings_layout.setCurrentIndex)
+
+        dialog.layout().addWidget(tracking_algorithm)
+        dialog.layout().addWidget(settings_group)
+        dialog.layout().addWidget(buttons)
+        # Store settings if user accepts
+        if dialog.exec():
+            self.track_settings['package'] = tracking_algorithm.currentText()
+            for package, setting_widget in setting_widgets.items():
+                self.track_settings[package] = setting_widget.get_settings()
 
     def select_schedule(self):
         fname = QtWidgets.QFileDialog.getOpenFileName(
@@ -3006,10 +3191,15 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             "conf_threshold": self.conf_threshold.value(),
             "iou": self.iou.value(),
             "half_precision": self.half_precision.isChecked(),
-            "batch_size": self.batch_size.value(),
-            "pixel_size": self.pixel_size.value(), 
+            "batch_size": self.batch_size.value(),             
             "tensorRT": self.use_tensorRT.isChecked(),
         }
+        track_settings = dict(self.track_settings)
+        track_settings.update({
+            "pixel_size": self.pixel_size.value(),
+            "movement_features": self.movement_features.isChecked(),
+            "zip_tracking_file": self.zip_tracking_file.isChecked(),
+        })
         dialog = ProgressDialog(
             self,
             bg_params=background_params,
@@ -3018,6 +3208,8 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             fileno_step=index_step,
             inference_params=inference_params,
             record_video=self.record_video.isChecked(),
+            link_tracks=self.link_tracks.isChecked(),
+            track_settings=track_settings,
             read_function=read_functions[self.read_library.currentText()],
             archive_compressed_files=self.archive_compressed_files.isChecked(),
             schedule=self.schedule,
