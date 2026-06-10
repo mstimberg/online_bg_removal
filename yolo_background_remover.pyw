@@ -745,7 +745,7 @@ class OptimizedDetectionPredictor(DetectionPredictor):
         for im, result in zip(img, results):
             mask = torch.ones(result.orig_shape, dtype=bool, device=self.device)
             for x1, y1, x2, y2 in result.boxes.xyxy:
-                mask[int(round(y1)):int(round(y2)), int(round(x1)):int(round(x2))] = False
+                mask[int(y1 + 0.5):int(y2 + 0.5), int(x1 + 0.5):int(x2 + 0.5)] = False
             im[0][mask] = 1.0
             result.masks = mask
             result.masked_image = im[0].mul(255).to(torch.uint8)
