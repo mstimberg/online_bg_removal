@@ -16,5 +16,5 @@ venv/
 # Log files
 cufile.log
 
-# Our own settings file
-last_settings.yaml
+# Our own settings files
+last_*settings.yaml
