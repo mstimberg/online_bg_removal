@@ -724,7 +724,7 @@ def create_mask(boxes, frame_shape):
     # Mask everything except for the cells
     mask = np.ones(frame_shape, dtype=bool)
     for x1, y1, x2, y2 in boxes:
-        mask[int(y1):int(y2), int(x1):int(x2)] = False
+        mask[int(round(y1)):int(round(y2)), int(round(x1)):int(round(x2))] = False
     return mask
 
 class OptimizedDetectionPredictor(DetectionPredictor):    
@@ -745,7 +745,7 @@ class OptimizedDetectionPredictor(DetectionPredictor):
         for im, result in zip(img, results):
             mask = torch.ones(result.orig_shape, dtype=bool, device=self.device)
             for x1, y1, x2, y2 in result.boxes.xyxy:
-                mask[int(y1):int(y2), int(x1):int(x2)] = False
+                mask[int(round(y1)):int(round(y2)), int(round(x1)):int(round(x2))] = False
             im[0][mask] = 1.0
             result.masks = mask
             result.masked_image = im[0].mul(255).to(torch.uint8)
@@ -2469,6 +2469,7 @@ class FindCellsWorker(QtCore.QThread):
             self.boxes,
             self.image.shape,
         )
+        self.confidence = results[0].boxes.conf.cpu().numpy()
         self.finished.emit()
 
 # Inherit from Qt window
@@ -2498,6 +2499,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self.inference_model = None
         self.masked_file_preview = None
         self._bbox_squares = []
+        self._confidence_labels = []
 
         self.image_preview.ui.menuBtn.hide()
         self.image_preview.getHistogramWidget().hide()
@@ -3073,9 +3075,11 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         if not self.roi_selector:
             return        
 
-        for square in self._bbox_squares:
+        for label, square in zip(self._confidence_labels, self._bbox_squares):
             self.masked_preview.getView().removeItem(square)
+            self.masked_preview.getView().removeItem(label)
         self._bbox_squares.clear()
+        self._confidence_labels.clear()
 
         current_idx = self.image_preview.currentIndex
         roi_slice = get_roi_slice(self.roi_selector)
@@ -3108,6 +3112,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
     @QtCore.Slot()
     def cells_finished(self):
         boxes = self._find_cells_worker.boxes
+        confidence = self._find_cells_worker.confidence
         mask = self._find_cells_worker.mask
         image = self._find_cells_worker.image
         initialize = self._find_cells_worker.initialize
@@ -3135,12 +3140,19 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self.masked_file_preview = masked_file
         pen_color = QtGui.QColor("#C80000")
         pen_color.setAlpha(200)
-        for y1,x1,y2,x2 in boxes:
+        for confidence, (y1,x1,y2,x2) in zip(confidence, boxes):
             square = QtWidgets.QGraphicsRectItem(x1, y1, x2-x1, y2-y1)            
             square.setPen(pg.mkPen(pen_color, width=1))
 
             self.masked_preview.getView().addItem(square)
             self._bbox_squares.append(square)
+
+            label = pg.TextItem(
+                f"{confidence:.02f}", color=(200, 0, 0, 200), anchor=(0, 1)
+            )
+            label.setPos(x2, y1)
+            self._confidence_labels.append(label)
+            self.masked_preview.getView().addItem(label)
 
         # Restore zoom/pan
         if not initialize:
