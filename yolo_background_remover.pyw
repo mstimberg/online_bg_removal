@@ -724,8 +724,122 @@ def create_mask(boxes, frame_shape):
     # Mask everything except for the cells
     mask = np.ones(frame_shape, dtype=bool)
     for x1, y1, x2, y2 in boxes:
-        mask[int(round(y1)):int(round(y2)), int(round(x1)):int(round(x2))] = False
+        mask[y1:y2, x1:x2] = False
     return mask
+
+@torch.no_grad()
+@torch.compile()
+def extract_patches_centroid_theta(image, boxes_float):
+    """
+    image:       (B, H, W) float tensor on GPU, values in [0, 1]
+    boxes_float: list/tuple of length B with tensors/arrays of shape (Ni, 4)
+
+    Returns a list (length B) with one dict per frame:
+    mask               : (N, Hmax, Wmax) True where patch pixels are valid
+    boxes_int          : (N, 4) rounded+clamped integer boxes (xyxy, x2/y2 exclusive)
+    masked_image       : (H, W) uint8 image with only box pixels preserved
+    centroid_global    : (N, 2) centroid in image coords (x, y)
+    orientation        : (N,) orientation angle in radians
+    """
+    device = image.device
+    work_dtype = torch.float32 if image.dtype in (torch.float16, torch.bfloat16) else image.dtype
+    images = image.to(work_dtype)
+    B, H, W = images.shape
+    
+    outputs = []
+    for img, boxes in zip(images, boxes_float):
+        if boxes.numel() == 0:
+            outputs.append({
+                "mask": torch.zeros((0, 0, 0), dtype=torch.bool, device=device),
+                "boxes_int": torch.zeros((0, 4), dtype=torch.long, device=device),
+                "masked_image": torch.ones((H, W), dtype=torch.uint8, device=device) * 255,
+                "centroid_global": torch.zeros((0, 2), dtype=work_dtype, device=device),
+                "orientation": torch.zeros((0,), dtype=work_dtype, device=device),
+            })
+            continue
+
+        N = boxes.shape[0]
+
+        # 1) Round float boxes to integer pixel boxes
+        b = torch.round(boxes).to(torch.long)
+        x1, y1, x2, y2 = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
+
+        # 2) Clamp to image bounds, enforce at least 1x1 box
+        x1 = x1.clamp(0, W - 1)
+        y1 = y1.clamp(0, H - 1)
+        x2 = x2.clamp(1, W)
+        y2 = y2.clamp(1, H)
+
+        x2 = torch.maximum(x2, x1 + 1)
+        y2 = torch.maximum(y2, y1 + 1)
+
+        boxes_int = torch.stack([x1, y1, x2, y2], dim=1)
+
+        widths = x2 - x1
+        heights = y2 - y1
+        Hmax = int(heights.max().item())
+        Wmax = int(widths.max().item())
+
+        # 3) Build padded batched patches tensor
+        y_grid = torch.arange(Hmax, device=device, dtype=torch.long).view(1, Hmax, 1)   # local y
+        x_grid = torch.arange(Wmax, device=device, dtype=torch.long).view(1, 1, Wmax)   # local x
+
+        Y = y1.view(N, 1, 1) + y_grid   # absolute y indices
+        X = x1.view(N, 1, 1) + x_grid   # absolute x indices
+
+        mask = (y_grid < heights.view(N, 1, 1)) & (x_grid < widths.view(N, 1, 1))
+
+        # Safe gather indices (masked-out values will be zeroed anyway)
+        Yc = Y.clamp(0, H - 1)
+        Xc = X.clamp(0, W - 1)
+
+        patches = img[Yc, Xc] * mask.to(work_dtype)
+
+        masked_image = torch.ones_like(img, dtype=work_dtype)
+        idx = mask.nonzero(as_tuple=True)   # (n_idx, h_idx, w_idx)
+        y_idx = Yc[idx[0], idx[1], 0]       # because Yc is (N,H,1)
+        x_idx = Xc[idx[0], 0, idx[2]]       # because Xc is (N,1,W)
+        vals = patches[idx]
+        masked_image[y_idx, x_idx] = vals
+
+        # 4) Batched local moments (using local patch coordinates)
+        y_local = y_grid.to(work_dtype)
+        x_local = x_grid.to(work_dtype)
+
+        M00 = patches.sum(dim=(1, 2))
+        M10 = (patches * y_local).sum(dim=(1, 2))
+        M01 = (patches * x_local).sum(dim=(1, 2))
+        M11 = (patches * y_local * x_local).sum(dim=(1, 2))
+        M20 = (patches * y_local * y_local).sum(dim=(1, 2))
+        M02 = (patches * x_local * x_local).sum(dim=(1, 2))
+
+        invM00 = 1.0 / M00
+        cy = M10 * invM00
+        cx = M01 * invM00
+
+        mu20 = M20 * invM00 - cy * cy
+        mu02 = M02 * invM00 - cx * cx
+        mu11 = M11 * invM00 - cy * cx
+        
+        mu2_diff = mu20 - mu02
+        theta = torch.where(
+            mu2_diff == 0,
+            torch.where(mu11 < 0, -np.pi / 4, np.pi / 4),
+            -0.5 * torch.arctan2(2 * mu11, mu2_diff),
+        )
+        centroid_global_xy = torch.stack(
+            [x1.to(work_dtype) + cx, y1.to(work_dtype) + cy], dim=1
+        )
+
+        outputs.append({
+            "mask": mask,
+            "boxes_int": boxes_int,
+            "masked_image": masked_image.mul(255).to(torch.uint8),
+            "centroid": centroid_global_xy,
+            "orientation": theta,
+        })
+
+    return outputs
 
 class OptimizedDetectionPredictor(DetectionPredictor):
     def __init__(self, *args, regionprops=(), **kwds):        
@@ -742,127 +856,14 @@ class OptimizedDetectionPredictor(DetectionPredictor):
         else:        
             im = im.float() / 255
         return im
-    
-    @torch.no_grad()
-    @torch.compile()
-    def extract_patches_centroid_theta(self, image, boxes_float, eps=1e-8):
-        """
-        image:       (B, H, W) float tensor on GPU, values in [0, 1]
-        boxes_float: list/tuple of length B with tensors/arrays of shape (Ni, 4)
-
-        Returns a list (length B) with one dict per frame:
-        mask               : (N, Hmax, Wmax) True where patch pixels are valid
-        boxes_int          : (N, 4) rounded+clamped integer boxes (xyxy, x2/y2 exclusive)
-        masked_image       : (H, W) uint8 image with only box pixels preserved
-        centroid_global    : (N, 2) centroid in image coords (x, y)
-        orientation        : (N,) orientation angle in radians
-        """
-        device = image.device
-        work_dtype = torch.float32 if image.dtype in (torch.float16, torch.bfloat16) else image.dtype
-        images = image.to(work_dtype)
-        B, H, W = images.shape
         
-        outputs = []
-        for img, boxes in zip(images, boxes_float):
-            if boxes.numel() == 0:
-                outputs.append({
-                    "mask": torch.zeros((0, 0, 0), dtype=torch.bool, device=device),
-                    "boxes_int": torch.zeros((0, 4), dtype=torch.long, device=device),
-                    "masked_image": torch.ones((H, W), dtype=torch.uint8, device=device) * 255,
-                    "centroid_global": torch.zeros((0, 2), dtype=work_dtype, device=device),
-                    "orientation": torch.zeros((0,), dtype=work_dtype, device=device),
-                })
-                continue
-
-            N = boxes.shape[0]
-
-            # 1) Round float boxes to integer pixel boxes
-            b = torch.round(boxes).to(torch.long)
-            x1, y1, x2, y2 = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
-
-            # 2) Clamp to image bounds, enforce at least 1x1 box
-            x1 = x1.clamp(0, W - 1)
-            y1 = y1.clamp(0, H - 1)
-            x2 = x2.clamp(1, W)
-            y2 = y2.clamp(1, H)
-
-            x2 = torch.maximum(x2, x1 + 1)
-            y2 = torch.maximum(y2, y1 + 1)
-
-            boxes_int = torch.stack([x1, y1, x2, y2], dim=1)
-
-            widths = x2 - x1
-            heights = y2 - y1
-            Hmax = int(heights.max().item())
-            Wmax = int(widths.max().item())
-
-            # 3) Build padded batched patches tensor
-            y_grid = torch.arange(Hmax, device=device, dtype=torch.long).view(1, Hmax, 1)   # local y
-            x_grid = torch.arange(Wmax, device=device, dtype=torch.long).view(1, 1, Wmax)   # local x
-
-            Y = y1.view(N, 1, 1) + y_grid   # absolute y indices
-            X = x1.view(N, 1, 1) + x_grid   # absolute x indices
-
-            mask = (y_grid < heights.view(N, 1, 1)) & (x_grid < widths.view(N, 1, 1))
-
-            # Safe gather indices (masked-out values will be zeroed anyway)
-            Yc = Y.clamp(0, H - 1)
-            Xc = X.clamp(0, W - 1)
-
-            patches = img[Yc, Xc] * mask.to(work_dtype)
-
-            masked_image = torch.ones_like(img, dtype=work_dtype)
-            idx = mask.nonzero(as_tuple=True)   # (n_idx, h_idx, w_idx)
-            y_idx = Yc[idx[0], idx[1], 0]       # because Yc is (N,H,1)
-            x_idx = Xc[idx[0], 0, idx[2]]       # because Xc is (N,1,W)
-            vals = patches[idx]
-            masked_image[y_idx, x_idx] = vals
-
-            # 4) Batched local moments (using local patch coordinates)
-            y_local = y_grid.to(work_dtype)
-            x_local = x_grid.to(work_dtype)
-
-            M00 = patches.sum(dim=(1, 2))
-            M10 = (patches * y_local).sum(dim=(1, 2))
-            M01 = (patches * x_local).sum(dim=(1, 2))
-            M11 = (patches * y_local * x_local).sum(dim=(1, 2))
-            M20 = (patches * y_local * y_local).sum(dim=(1, 2))
-            M02 = (patches * x_local * x_local).sum(dim=(1, 2))
-
-            invM00 = 1.0 / (M00 + eps)
-            cy = M10 * invM00
-            cx = M01 * invM00
-
-            mu20 = M20 * invM00 - cy * cy
-            mu02 = M02 * invM00 - cx * cx
-            mu11 = M11 * invM00 - cy * cx
-            
-            mu2_diff = mu20 - mu02
-            theta = torch.where(
-                mu2_diff == 0,
-                torch.where(mu11 < 0, -np.pi / 4, np.pi / 4),
-                0.5 * torch.arctan2(2 * mu11, mu2_diff),
-            )
-            centroid_global_xy = torch.stack(
-                [x1.to(work_dtype) + cx, y1.to(work_dtype) + cy], dim=1
-            )
-
-            outputs.append({
-                "mask": mask,
-                "boxes_int": boxes_int,
-                "masked_image": masked_image.mul(255).to(torch.uint8),
-                "centroid": centroid_global_xy,
-                "orientation": theta,
-            })
-
-        return outputs
 
     def postprocess(self, preds, img, orig_imgs, **kwargs):
         results = super().postprocess(preds, img, orig_imgs, **kwargs)
         # We only use one of the channels – they are all the same
         gray_batch = img[:, 0]
         boxes_batch = [result.boxes.xyxy for result in results]
-        custom_results = self.extract_patches_centroid_theta(gray_batch, boxes_batch)
+        custom_results = extract_patches_centroid_theta(gray_batch, boxes_batch)
         for result, custom in zip(results, custom_results):
             result.custom = custom
         return results
@@ -2688,7 +2689,10 @@ class FindCellsWorker(QtCore.QThread):
     finished = QtCore.Signal()
     
     def __init__(self, image, model, conf, iou, half, initialize=False):
-        self.image = image
+        self.image = torch.tensor(
+            np.broadcast_to(image[None, None, :, :], (1, 3) + image.shape)
+            / 255.0,
+        )
         self.conf = conf
         self.iou = iou
         self.half = half
@@ -2697,21 +2701,23 @@ class FindCellsWorker(QtCore.QThread):
         super().__init__()
 
     def run(self):
-        rgb_frame = np.broadcast_to(self.image[:, :, None], self.image.shape + (3,))
         with torch.no_grad():
             results = self.model(
-                [rgb_frame],
-                imgsz=self.image.shape[:2],
+                self.image,
+                imgsz=self.image.shape[2:],
                 conf=self.conf,
                 iou=self.iou,
                 half=self.half,
             )
-        self.boxes = results[0].boxes.xyxy.cpu().numpy()
-        self.mask = create_mask(
-            self.boxes,
-            self.image.shape,
+        post_results = extract_patches_centroid_theta(
+            self.image[:, 0, :, :].to(device=results[0].boxes.xyxy.device),
+            [results[0].boxes.xyxy],
         )
+        self.boxes = post_results[0]["boxes_int"].cpu()
+        self.mask = create_mask(self.boxes, self.image.shape[2:])
         self.confidence = results[0].boxes.conf.cpu().numpy()
+        self.centroids = post_results[0]["centroid"].cpu().numpy()
+        self.orientations = post_results[0]["orientation"].cpu().numpy()
         self.finished.emit()
 
 # Inherit from Qt window
@@ -2741,6 +2747,8 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self.inference_model = None
         self.masked_file_preview = None
         self._bbox_squares = []
+        self._center_dots = []
+        self._orientation_lines = []
         self._confidence_labels = []
 
         self.image_preview.ui.menuBtn.hide()
@@ -3246,7 +3254,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
                 frame = read_function(full_path)
             else:
                 frame = read_image_imageio(full_path)
-            self.preview_frames.append(frame)
+            self.preview_frames.append(frame.T)
 
         self.finish_task()
 
@@ -3404,6 +3412,8 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             self.masked_preview.getView().removeItem(square)
             self.masked_preview.getView().removeItem(label)
         self._bbox_squares.clear()
+        self._center_dots.clear()
+        self._orientation_lines.clear()
         self._confidence_labels.clear()
 
         current_idx = self.image_preview.currentIndex
@@ -3439,7 +3449,9 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         boxes = self._find_cells_worker.boxes
         confidence = self._find_cells_worker.confidence
         mask = self._find_cells_worker.mask
-        image = self._find_cells_worker.image
+        image = self._find_cells_worker.image[0, 0, :, :].mul(255).to(dtype=torch.uint8)
+        centroids = self._find_cells_worker.centroids
+        orientations = self._find_cells_worker.orientations
         initialize = self._find_cells_worker.initialize
         if not initialize:
             view_box = self.masked_preview.getImageItem().getViewBox()
@@ -3447,25 +3459,25 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self.cell_label.setText(f"Found {len(boxes)} cells.")
 
         # Build an RGBA composite: original image + semi-transparent mask overlay
-        rgba = np.zeros((*image.shape, 4), dtype=np.uint8)
+        rgba = torch.zeros((*image.shape, 4), dtype=torch.uint8)
         rgba[..., :3] = image[:, :, None]
         rgba[..., 3] = 255  # fully opaque base image
         # Overlay mask in semi-transparent red
-        overlay = np.zeros((*image.shape, 4), dtype=np.uint8)
-        overlay[mask] = [*MASK_COLOR, 120]
+        overlay = torch.zeros((*image.shape, 4), dtype=torch.uint8)
+        overlay[mask] = torch.tensor([*MASK_COLOR, 120], dtype=torch.uint8)
         # Alpha-composite overlay onto rgba
-        alpha = overlay[..., 3:4].astype(np.float32) / 255.0
+        alpha = overlay[..., 3:4].to(dtype=torch.float32) / 255.0
         rgba[..., :3] = (
             overlay[..., :3] * alpha + rgba[..., :3] * (1 - alpha)
-        ).astype(np.uint8)
+        ).to(dtype=torch.uint8)
 
-        self.masked_preview.setImage(rgba)
-        masked_file = image.copy()
+        self.masked_preview.setImage(rgba.cpu().numpy())
+        masked_file = image.cpu().numpy()
         masked_file[mask] = 255
         self.masked_file_preview = masked_file
         pen_color = QtGui.QColor("#C80000")
-        pen_color.setAlpha(200)
-        for confidence, (y1,x1,y2,x2) in zip(confidence, boxes):
+        pen_color.setAlpha(120)
+        for (cy, cx), angle, confidence, (y1,x1,y2,x2) in zip(centroids, orientations, confidence, boxes):
             square = QtWidgets.QGraphicsRectItem(x1, y1, x2-x1, y2-y1)            
             square.setPen(pg.mkPen(pen_color, width=1))
 
@@ -3478,6 +3490,22 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             label.setPos(x2, y1)
             self._confidence_labels.append(label)
             self.masked_preview.getView().addItem(label)
+            center_dot = QtWidgets.QGraphicsRectItem(cx-0.5, cy-0.5, 1, 1)
+            center_dot.setPen(pg.mkPen(pen_color, width=1))
+            center_dot.setBrush(pg.mkBrush(pen_color))
+            self._center_dots.append(center_dot)
+            self.masked_preview.getView().addItem(center_dot)
+            radius = min(x2 - x1, y1 - y2)/2
+            lx1, ly1, lx2, ly2 = (
+                cx + np.cos(angle) * radius,
+                cy + np.sin(angle) * radius,
+                cx - np.cos(angle) * radius,
+                cy - np.sin(angle) * radius,
+            )
+            orientation_line = QtWidgets.QGraphicsLineItem(lx1, ly1, lx2, ly2)
+            orientation_line.setPen(pg.mkPen(pen_color, width=2))
+            self._orientation_lines.append(orientation_line)
+            self.masked_preview.getView().addItem(orientation_line)
 
         # Restore zoom/pan
         if not initialize:
