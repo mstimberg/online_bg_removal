@@ -727,7 +727,11 @@ def create_mask(boxes, frame_shape):
         mask[int(round(y1)):int(round(y2)), int(round(x1)):int(round(x2))] = False
     return mask
 
-class OptimizedDetectionPredictor(DetectionPredictor):    
+class OptimizedDetectionPredictor(DetectionPredictor):
+    def __init__(self, *args, regionprops=(), **kwds):        
+        super().__init__(*args, **kwds)
+        self.regionprops = regionprops
+    
     def preprocess(self, im: torch.Tensor | list[np.ndarray]) -> torch.Tensor:
         # Slightly optimized for grayscale images of fixed size.
         im = np.stack(im)
@@ -739,16 +743,128 @@ class OptimizedDetectionPredictor(DetectionPredictor):
             im = im.float() / 255
         return im
     
+    @torch.no_grad()
+    @torch.compile()
+    def extract_patches_centroid_theta(self, image, boxes_float, eps=1e-8):
+        """
+        image:       (B, H, W) float tensor on GPU, values in [0, 1]
+        boxes_float: list/tuple of length B with tensors/arrays of shape (Ni, 4)
+
+        Returns a list (length B) with one dict per frame:
+        mask               : (N, Hmax, Wmax) True where patch pixels are valid
+        boxes_int          : (N, 4) rounded+clamped integer boxes (xyxy, x2/y2 exclusive)
+        masked_image       : (H, W) uint8 image with only box pixels preserved
+        centroid_global    : (N, 2) centroid in image coords (x, y)
+        orientation        : (N,) orientation angle in radians
+        """
+        device = image.device
+        work_dtype = torch.float32 if image.dtype in (torch.float16, torch.bfloat16) else image.dtype
+        images = image.to(work_dtype)
+        B, H, W = images.shape
+        
+        outputs = []
+        for img, boxes in zip(images, boxes_float):
+            if boxes.numel() == 0:
+                outputs.append({
+                    "mask": torch.zeros((0, 0, 0), dtype=torch.bool, device=device),
+                    "boxes_int": torch.zeros((0, 4), dtype=torch.long, device=device),
+                    "masked_image": torch.ones((H, W), dtype=torch.uint8, device=device) * 255,
+                    "centroid_global": torch.zeros((0, 2), dtype=work_dtype, device=device),
+                    "orientation": torch.zeros((0,), dtype=work_dtype, device=device),
+                })
+                continue
+
+            N = boxes.shape[0]
+
+            # 1) Round float boxes to integer pixel boxes
+            b = torch.round(boxes).to(torch.long)
+            x1, y1, x2, y2 = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
+
+            # 2) Clamp to image bounds, enforce at least 1x1 box
+            x1 = x1.clamp(0, W - 1)
+            y1 = y1.clamp(0, H - 1)
+            x2 = x2.clamp(1, W)
+            y2 = y2.clamp(1, H)
+
+            x2 = torch.maximum(x2, x1 + 1)
+            y2 = torch.maximum(y2, y1 + 1)
+
+            boxes_int = torch.stack([x1, y1, x2, y2], dim=1)
+
+            widths = x2 - x1
+            heights = y2 - y1
+            Hmax = int(heights.max().item())
+            Wmax = int(widths.max().item())
+
+            # 3) Build padded batched patches tensor
+            y_grid = torch.arange(Hmax, device=device, dtype=torch.long).view(1, Hmax, 1)   # local y
+            x_grid = torch.arange(Wmax, device=device, dtype=torch.long).view(1, 1, Wmax)   # local x
+
+            Y = y1.view(N, 1, 1) + y_grid   # absolute y indices
+            X = x1.view(N, 1, 1) + x_grid   # absolute x indices
+
+            mask = (y_grid < heights.view(N, 1, 1)) & (x_grid < widths.view(N, 1, 1))
+
+            # Safe gather indices (masked-out values will be zeroed anyway)
+            Yc = Y.clamp(0, H - 1)
+            Xc = X.clamp(0, W - 1)
+
+            patches = img[Yc, Xc] * mask.to(work_dtype)
+
+            masked_image = torch.ones_like(img, dtype=work_dtype)
+            idx = mask.nonzero(as_tuple=True)   # (n_idx, h_idx, w_idx)
+            y_idx = Yc[idx[0], idx[1], 0]       # because Yc is (N,H,1)
+            x_idx = Xc[idx[0], 0, idx[2]]       # because Xc is (N,1,W)
+            vals = patches[idx]
+            masked_image[y_idx, x_idx] = vals
+
+            # 4) Batched local moments (using local patch coordinates)
+            y_local = y_grid.to(work_dtype)
+            x_local = x_grid.to(work_dtype)
+
+            M00 = patches.sum(dim=(1, 2))
+            M10 = (patches * y_local).sum(dim=(1, 2))
+            M01 = (patches * x_local).sum(dim=(1, 2))
+            M11 = (patches * y_local * x_local).sum(dim=(1, 2))
+            M20 = (patches * y_local * y_local).sum(dim=(1, 2))
+            M02 = (patches * x_local * x_local).sum(dim=(1, 2))
+
+            invM00 = 1.0 / (M00 + eps)
+            cy = M10 * invM00
+            cx = M01 * invM00
+
+            mu20 = M20 * invM00 - cy * cy
+            mu02 = M02 * invM00 - cx * cx
+            mu11 = M11 * invM00 - cy * cx
+            
+            mu2_diff = mu20 - mu02
+            theta = torch.where(
+                mu2_diff == 0,
+                torch.where(mu11 < 0, -np.pi / 4, np.pi / 4),
+                0.5 * torch.arctan2(2 * mu11, mu2_diff),
+            )
+            centroid_global_xy = torch.stack(
+                [x1.to(work_dtype) + cx, y1.to(work_dtype) + cy], dim=1
+            )
+
+            outputs.append({
+                "mask": mask,
+                "boxes_int": boxes_int,
+                "masked_image": masked_image.mul(255).to(torch.uint8),
+                "centroid": centroid_global_xy,
+                "orientation": theta,
+            })
+
+        return outputs
+
     def postprocess(self, preds, img, orig_imgs, **kwargs):
         results = super().postprocess(preds, img, orig_imgs, **kwargs)
-        # Create masks
-        for im, result in zip(img, results):
-            mask = torch.ones(result.orig_shape, dtype=bool, device=self.device)
-            for x1, y1, x2, y2 in result.boxes.xyxy:
-                mask[int(y1 + 0.5):int(y2 + 0.5), int(x1 + 0.5):int(x2 + 0.5)] = False
-            im[0][mask] = 1.0
-            result.masks = mask
-            result.masked_image = im[0].mul(255).to(torch.uint8)
+        # We only use one of the channels – they are all the same
+        gray_batch = img[:, 0]
+        boxes_batch = [result.boxes.xyxy for result in results]
+        custom_results = self.extract_patches_centroid_theta(gray_batch, boxes_batch)
+        for result, custom in zip(results, custom_results):
+            result.custom = custom
         return results
 
 
@@ -882,8 +998,10 @@ class YoloBackgroundRemover(QtCore.QThread):
             )
         results = [
             {
-                "boxes": r.boxes.xyxy.cpu().numpy(),
-                "masked_image": r.masked_image.cpu().numpy(),
+                "boxes": r.custom["boxes_int"].cpu(),
+                "masked_image": r.custom["masked_image"].cpu().numpy(),
+                "orientation": r.custom["orientation"],
+                "centroid": r.custom["centroid"],
             }
             for r in results
         ]
@@ -933,6 +1051,9 @@ class YoloBackgroundRemover(QtCore.QThread):
             )
             bounding_boxes = [r["boxes"] for r in results]
             masked_images = [r["masked_image"] for r in results]
+            orientations = [r["orientation"] for r in results]
+            centroids = [r["centroid"] for r in results]
+
             # Write results to track file
             self.track_file_queue.put(
                 {
@@ -940,7 +1061,9 @@ class YoloBackgroundRemover(QtCore.QThread):
                     "epoch": epoch,
                     "relative_start_idx": relative_idx - buffer_size + 1,
                     "n_frames": buffer_size,
-                    "bounding_boxes": bounding_boxes
+                    "bounding_boxes": bounding_boxes,
+                    "orientations": orientations,
+                    "centroids": centroids,
                 }
             )
 
@@ -1530,12 +1653,22 @@ class TrackFileThread(QtCore.QThread):
                     self.track_file_list.clear()
                     continue
 
-            last_idx, n_frames, epoch, relative_start_idx, bounding_boxes = (
+            (
+                last_idx,
+                n_frames,
+                epoch,
+                relative_start_idx,
+                bounding_boxes,
+                orientations,
+                centroids,
+            ) = (
                 task["idx"],
                 task["n_frames"],
                 task["epoch"],
                 task["relative_start_idx"],
                 task["bounding_boxes"],
+                task["orientations"],
+                task["centroids"],
             )
             if epoch == -1:
                 start_idx = last_idx - n_frames + 1
@@ -1551,10 +1684,10 @@ class TrackFileThread(QtCore.QThread):
 
             # We write the file manually, no need to go through pandas
             with open(fname, "wt") as f:
-                for frame, boxes in enumerate(bounding_boxes):
+                for frame, (center, boxes, angles) in enumerate(zip(centroids, bounding_boxes, orientations)):
                     # No headers for easier merging
-                    for b0, b1, b2, b3 in boxes:
-                        f.write(f"{frame + start_idx}\t{(b0 + b2)/2:.2f}\t{(b1 + b3)/2:.2f}\t{int(b0)}\t{int(b1)}\t{int(b2)}\t{int(b3)}\n")
+                    for (x, y), (b0, b1, b2, b3), angle in zip(center, boxes, angles):
+                        f.write(f"{frame + start_idx}\t{x}\t{y}\t{b0}\t{b1}\t{b2}\t{b3}\t{angle:.2f}\n")
             self.track_queue.task_done(last_idx)
 
         logger.info("TrackFileThread finished")
@@ -1569,7 +1702,7 @@ class TrackFileThread(QtCore.QThread):
         # Concatenate files
         with open(fname, "wt") as out_f:
             # Write header
-            out_f.write("frame\ty\tx\tbbox-0\tbbox-1\tbbox-2\tbbox-3\n")
+            out_f.write("frame\ty\tx\tbbox-0\tbbox-1\tbbox-2\tbbox-3\tangle\n")
             for in_fname in self.track_file_list:
                 with open(in_fname, "rt") as in_f:
                     shutil.copyfileobj(in_f, out_f)
