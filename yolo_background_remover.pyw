@@ -3406,11 +3406,18 @@ class FileCompressorGui(QtWidgets.QMainWindow):
 
     def update_masked(self, initialize=False):
         if not self.roi_selector:
-            return        
+            return
 
-        for label, square in zip(self._confidence_labels, self._bbox_squares):
+        for label, square, dot, line in zip(
+            self._confidence_labels,
+            self._bbox_squares,
+            self._center_dots,
+            self._orientation_lines,
+        ):
             self.masked_preview.getView().removeItem(square)
             self.masked_preview.getView().removeItem(label)
+            self.masked_preview.getView().removeItem(dot)
+            self.masked_preview.getView().removeItem(line)
         self._bbox_squares.clear()
         self._center_dots.clear()
         self._orientation_lines.clear()
