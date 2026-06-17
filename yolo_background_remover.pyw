@@ -47,6 +47,8 @@ from image_processing.trajectory_analysis import (
     segments_from_table,
 )
 
+pg.setConfigOptions(imageAxisOrder="row-major")
+
 DEFAULT_MIN_AREA = 400
 DEFAULT_MAX_AREA = 12500
 
@@ -366,12 +368,9 @@ def divisors(number):
     return [i for i in range(1, number + 1) if number % i == 0]
 
 
-def get_roi_slice(roi_selector, transposed_preview=True):
+def get_roi_slice(roi_selector):
     """
-    Return ROI slices from the selector.
-
-    The selector lives on transposed preview images with axes (x, y). For raw
-    processing frames (y, x), we have to swap axes.
+    Return ROI slices from the selector for row-major frames.
     """
     x_start = int(round(float(roi_selector.pos()[0])))
     y_start = int(round(float(roi_selector.pos()[1])))
@@ -380,12 +379,6 @@ def get_roi_slice(roi_selector, transposed_preview=True):
 
     x_stop = x_start + width
     y_stop = y_start + height
-
-    if transposed_preview:
-        # Preview arrays are shown as (x, y).
-        return slice(x_start, x_stop), slice(y_start, y_stop)
-
-    # Raw frames are indexed as (y, x).
     return slice(y_start, y_stop), slice(x_start, x_stop)
 
 
@@ -889,7 +882,8 @@ def extract_patches_centroid_theta(image, boxes_float):
         mu02 = torch.where(valid_mass, mu02, torch.zeros_like(mu02))
         mu11 = torch.where(valid_mass, mu11, torch.zeros_like(mu11))
         
-        mu2_diff = mu20 - mu02
+        # Moments are accumulated as (y, x), so the x/y difference is reversed here.
+        mu2_diff = mu02 - mu20
         theta = torch.where(
             mu2_diff == 0,
             torch.where(mu11 < 0, -np.pi / 4, np.pi / 4),
@@ -1340,7 +1334,7 @@ class FileWriterThread(QtCore.QThread):
         # libtiff seems to be slower for writing than imageio…
         write_image(
             full_path,
-            array.T,  # TODO: different from background_remover.pyw
+            array,
             compression=self.compression_algorithm,
         )
         logger.debug(f"Wrote '{fname}' (with imageio)", extra={"index": idx})
@@ -2763,8 +2757,8 @@ class ProgressDialog(QtWidgets.QDialog):
             procsed_state = processed_view_box.getState()
 
         # update images
-        self.orig_image.setImage(before_image.T)
-        self.processed_image.setImage(after_image.T)
+        self.orig_image.setImage(before_image)
+        self.processed_image.setImage(after_image)
 
         if has_image:
             # restore zoom/pan
@@ -3341,7 +3335,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
                 frame = read_function(full_path)
             else:
                 frame = read_image_imageio(full_path)
-            self.preview_frames.append(frame.T)
+            self.preview_frames.append(frame)
 
         self.finish_task()
 
@@ -3393,14 +3387,14 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         # Stop updating the number of files
         self.file_number_timer.stop()
 
-        x, y = self.preview_frames[0].shape
+        y, x = self.preview_frames[0].shape
         # Free the memory used for the initial frames
         del self.preview_frames
         self.preview_frames = None
 
-        roi_slice = get_roi_slice(self.roi_selector, transposed_preview=False)
+        roi_slice = get_roi_slice(self.roi_selector)
         background_params = {
-            "original_size": (x, y),            
+            "original_size": (y, x),
             "roi_slice": roi_slice,
             "dark_field": self.dark_field,
             "target_folder": target_folder,
@@ -3467,7 +3461,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             pos = prev_roi_pos
             size = prev_roi_size
         else:
-            width, height = images.shape[1], images.shape[2]
+            height, width = images.shape[1], images.shape[2]
             excess_width, excess_height = width % snap_size, height % snap_size
             pos = (excess_width//2, excess_height//2)            
             size = width-excess_width, height-excess_height
@@ -3479,17 +3473,14 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             snapSize=snap_size,
             translateSnap=True,
             scaleSnap=True,
-            maxBounds=QtCore.QRectF(0, 0, images.shape[1], images.shape[2]),
+            maxBounds=QtCore.QRectF(0, 0, images.shape[2], images.shape[1]),
         )
         self.roi_selector.addScaleHandle(pos=(0, 0), center=(1, 1))
         self.image_preview.getView().addItem(self.roi_selector)
         self.roi_selector.sigRegionChangeFinished.connect(lambda _: self.update_roi())
 
         # Remember for future changes
-        self.prev_size = (
-            self.image_preview.getImageItem().width(),
-            self.image_preview.getImageItem().height(),
-        )
+        self.prev_size = images[0].shape
 
     def update_masked(self, initialize=False):
         if not self.roi_selector:
@@ -3511,7 +3502,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self._confidence_labels.clear()
 
         current_idx = self.image_preview.currentIndex
-        roi_slice = get_roi_slice(self.roi_selector, transposed_preview=True)
+        roi_slice = get_roi_slice(self.roi_selector)
         image = np.asarray(self.preview_frames[current_idx])
         image = image[roi_slice]
 
@@ -3571,7 +3562,9 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self.masked_file_preview = masked_file
         pen_color = QtGui.QColor("#C80000")
         pen_color.setAlpha(120)
-        for (cy, cx), angle, confidence, (y1,x1,y2,x2) in zip(centroids, orientations, confidence, boxes):
+        for (cx, cy), angle, confidence, (x1, y1, x2, y2) in zip(
+            centroids, orientations, confidence, boxes
+        ):
             square = QtWidgets.QGraphicsRectItem(x1, y1, x2-x1, y2-y1)            
             square.setPen(pg.mkPen(pen_color, width=1))
 
@@ -3589,7 +3582,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             center_dot.setBrush(pg.mkBrush(pen_color))
             self._center_dots.append(center_dot)
             self.masked_preview.getView().addItem(center_dot)
-            radius = min(x2 - x1, y1 - y2)/2
+            radius = min(x2 - x1, y2 - y1) / 2
             lx1, ly1, lx2, ly2 = (
                 cx + np.cos(angle) * radius,
                 cy + np.sin(angle) * radius,
