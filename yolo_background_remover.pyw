@@ -1259,6 +1259,9 @@ class YoloBackgroundRemover(QtCore.QThread):
             if len(self.buffer) == buffer_size:
                 self.handle_buffer(idx, epoch, relative_idx)
 
+        # Block until tracking thread finishes
+        self.track_file_writer.wait()
+
 class FileWriterThread(QtCore.QThread):
     def __init__(
         self,
@@ -1967,12 +1970,9 @@ RATE_COLUMN_WIDTH = 100
 
 
 class WaitThread(QtCore.QThread):
-    def __init__(self, parent, threads, tracker_process, track_queue, epoch):
+    def __init__(self, parent, threads):
         super().__init__(parent=parent)
         self.threads = threads
-        self.tracker_process = tracker_process
-        self.track_queue = track_queue
-        self.epoch = epoch
 
     def run(self):
         threading.current_thread().name = QtCore.QThread.currentThread().objectName()
@@ -1982,13 +1982,6 @@ class WaitThread(QtCore.QThread):
         # Wait for all given threads to finish
         for thread in self.threads:
             thread.wait()
-
-        if self.tracker_process is not None:
-            self.track_queue.put({"type": "stop", "final": True, "last_idx": 0 ,"epoch": self.epoch})
-            while self.tracker_process.is_alive():
-                logger.debug("Waiting for tracker process to finish")
-                self.tracker_process.join(10)
-            logger.info("Tracker process has finished")
 
         logger.info("WaitThread finished")
 
@@ -2243,7 +2236,6 @@ class ProgressDialog(QtWidgets.QDialog):
         self.dir_observer = Observer()
         self.background_file_watcher = FileWatcher(self, dirname, self.fileno_offset, self.fileno_step)
         self.dir_observer.schedule(self.background_file_watcher, dirname)
-        self.tracker = None
         self.track_queue = None
         self.video_thread = None
 
@@ -2516,7 +2508,7 @@ class ProgressDialog(QtWidgets.QDialog):
         threads = [self.file_reader, self.background_remover, self.file_writer]
         if self.video_thread is not None:
             threads.append(self.video_thread)
-        self.wait_thread = WaitThread(self, threads, self.tracker, self.track_queue, self._epoch)
+        self.wait_thread = WaitThread(self, threads)
         self.wait_thread.setObjectName("WaitThread")
         self.wait_thread.finished.connect(self.all_done)
         self.wait_thread.start()
