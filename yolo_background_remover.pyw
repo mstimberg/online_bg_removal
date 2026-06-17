@@ -366,16 +366,27 @@ def divisors(number):
     return [i for i in range(1, number + 1) if number % i == 0]
 
 
-def get_roi_slice(roi_selector):
-    return tuple(
-        [
-            slice(
-                int(roi_selector.pos()[ax]),
-                int(roi_selector.pos()[ax] + roi_selector.size()[ax]),
-            )
-            for ax in [0, 1]  # TODO, different from background_remover.pyw
-        ]
-    )
+def get_roi_slice(roi_selector, transposed_preview=True):
+    """
+    Return ROI slices from the selector.
+
+    The selector lives on transposed preview images with axes (x, y). For raw
+    processing frames (y, x), we have to swap axes.
+    """
+    x_start = int(round(float(roi_selector.pos()[0])))
+    y_start = int(round(float(roi_selector.pos()[1])))
+    width = int(round(float(roi_selector.size()[0])))
+    height = int(round(float(roi_selector.size()[1])))
+
+    x_stop = x_start + width
+    y_stop = y_start + height
+
+    if transposed_preview:
+        # Preview arrays are shown as (x, y).
+        return slice(x_start, x_stop), slice(y_start, y_stop)
+
+    # Raw frames are indexed as (y, x).
+    return slice(y_start, y_stop), slice(x_start, x_stop)
 
 
 def extract_file_number(filename):
@@ -842,7 +853,7 @@ def extract_patches_centroid_theta(image, boxes_float):
     return outputs
 
 class OptimizedDetectionPredictor(DetectionPredictor):
-    def __init__(self, *args, regionprops=(), **kwds):        
+    def __init__(self, *args, regionprops=(), **kwds):
         super().__init__(*args, **kwds)
         self.regionprops = regionprops
     
@@ -3311,7 +3322,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         del self.preview_frames
         self.preview_frames = None
 
-        roi_slice = get_roi_slice(self.roi_selector)
+        roi_slice = get_roi_slice(self.roi_selector, transposed_preview=False)
         background_params = {
             "original_size": (x, y),            
             "roi_slice": roi_slice,
@@ -3424,7 +3435,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self._confidence_labels.clear()
 
         current_idx = self.image_preview.currentIndex
-        roi_slice = get_roi_slice(self.roi_selector)
+        roi_slice = get_roi_slice(self.roi_selector, transposed_preview=True)
         image = np.asarray(self.preview_frames[current_idx])
         image = image[roi_slice]
 
