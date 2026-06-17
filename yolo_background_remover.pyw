@@ -738,6 +738,45 @@ def create_mask(boxes, frame_shape):
         mask[y1:y2, x1:x2] = False
     return mask
 
+@torch.compile
+def otsu_intraclass_variance(image, thresholds):
+    flat_image = image.reshape(-1)
+    thresholds = torch.as_tensor(
+        thresholds, device=flat_image.device, dtype=flat_image.dtype
+    ).reshape(-1)
+
+    if thresholds.numel() == 0:
+        return thresholds
+
+    above = flat_image.unsqueeze(0) >= thresholds[:, None]
+    above_count = above.sum(dim=1)
+    below_count = flat_image.numel() - above_count
+
+    flat_image_2d = flat_image.unsqueeze(0)
+    flat_image_sq_2d = flat_image_2d.square()
+    above_sum = (above * flat_image_2d).sum(dim=1)
+    above_sum_sq = (above * flat_image_sq_2d).sum(dim=1)
+
+    total_sum = flat_image.sum()
+    total_sum_sq = flat_image.square().sum()
+    below_sum = total_sum - above_sum
+    below_sum_sq = total_sum_sq - above_sum_sq
+
+    above_mean = torch.where(above_count > 0, above_sum / above_count.clamp_min(1), 0.)
+
+    below_mean = torch.where(below_count > 0, below_sum / below_count.clamp_min(1), 0.)
+
+    above_var = above_sum_sq / above_count.clamp_min(1) - above_mean.square()
+    below_var = below_sum_sq / below_count.clamp_min(1) - below_mean.square()
+
+    total_count = thresholds.new_tensor(float(flat_image.numel()))
+    above_weight = above_count.to(dtype=thresholds.dtype) / total_count
+    below_weight = below_count.to(dtype=thresholds.dtype) / total_count
+
+    intra_var = above_weight * above_var + below_weight * below_var
+    return intra_var.squeeze(0) if intra_var.numel() == 1 else intra_var
+
+
 @torch.no_grad()
 @torch.compile()
 def extract_patches_centroid_theta(image, boxes_float):
@@ -817,6 +856,13 @@ def extract_patches_centroid_theta(image, boxes_float):
         y_local = y_grid.to(work_dtype)
         x_local = x_grid.to(work_dtype)
 
+        # Determine a threshold via Otsu's method.
+
+        # Use only valid box pixels to avoid bias from zero padding.
+        valid_pixels = patches[mask]
+        threshold = compute_otsu_threshold(valid_pixels)
+        patches[patches>threshold] = 0.0
+
         M00 = patches.sum(dim=(1, 2))
         M10 = (patches * y_local).sum(dim=(1, 2))
         M01 = (patches * x_local).sum(dim=(1, 2))
@@ -824,23 +870,39 @@ def extract_patches_centroid_theta(image, boxes_float):
         M20 = (patches * y_local * y_local).sum(dim=(1, 2))
         M02 = (patches * x_local * x_local).sum(dim=(1, 2))
 
-        invM00 = 1.0 / M00
+        valid_mass = M00 > 0
+        safe_M00 = torch.where(valid_mass, M00, torch.ones_like(M00))
+        invM00 = 1.0 / safe_M00
         cy = M10 * invM00
         cx = M01 * invM00
+
+        # If thresholding removes all intensity from a patch, fall back to its box center.
+        fallback_cy = (heights.to(work_dtype) - 1) * 0.5
+        fallback_cx = (widths.to(work_dtype) - 1) * 0.5
+        cy = torch.where(valid_mass, cy, fallback_cy)
+        cx = torch.where(valid_mass, cx, fallback_cx)
 
         mu20 = M20 * invM00 - cy * cy
         mu02 = M02 * invM00 - cx * cx
         mu11 = M11 * invM00 - cy * cx
+        mu20 = torch.where(valid_mass, mu20, torch.zeros_like(mu20))
+        mu02 = torch.where(valid_mass, mu02, torch.zeros_like(mu02))
+        mu11 = torch.where(valid_mass, mu11, torch.zeros_like(mu11))
         
         mu2_diff = mu20 - mu02
         theta = torch.where(
             mu2_diff == 0,
             torch.where(mu11 < 0, -np.pi / 4, np.pi / 4),
-            -0.5 * torch.arctan2(2 * mu11, mu2_diff),
+            0.5 * torch.arctan2(2 * mu11, mu2_diff),
         )
-        centroid_global_xy = torch.stack(
-            [x1.to(work_dtype) + cx, y1.to(work_dtype) + cy], dim=1
-        )
+        theta = torch.where(valid_mass, theta, torch.full_like(theta, float("nan")))
+        centroid_x = x1.to(work_dtype) + cx
+        centroid_y = y1.to(work_dtype) + cy
+        bbox_center_x = (x1.to(work_dtype) + x2.to(work_dtype)) * 0.5
+        bbox_center_y = (y1.to(work_dtype) + y2.to(work_dtype)) * 0.5
+        centroid_x = torch.where(valid_mass, centroid_x, bbox_center_x)
+        centroid_y = torch.where(valid_mass, centroid_y, bbox_center_y)
+        centroid_global_xy = torch.stack([centroid_x, centroid_y], dim=1)
 
         outputs.append({
             "mask": mask,
@@ -851,6 +913,20 @@ def extract_patches_centroid_theta(image, boxes_float):
         })
 
     return outputs
+
+def compute_otsu_threshold(valid_pixels):
+    threshold_range = (
+            torch.arange(
+                int(torch.min(valid_pixels * 255) + 1), int(torch.max(valid_pixels * 255))
+            )
+            / 255.0
+        )
+    if threshold_range.numel() == 0:
+        threshold = valid_pixels.max()
+    else:
+        threshold_scores = otsu_intraclass_variance(valid_pixels, threshold_range)
+        threshold = threshold_range[torch.argmin(threshold_scores)]
+    return threshold
 
 class OptimizedDetectionPredictor(DetectionPredictor):
     def __init__(self, *args, regionprops=(), **kwds):
