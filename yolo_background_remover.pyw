@@ -926,6 +926,7 @@ class OptimizedDetectionPredictor(DetectionPredictor):
     def __init__(self, *args, regionprops=(), **kwds):
         super().__init__(*args, **kwds)
         self.regionprops = regionprops
+        self._last_preprocessed = None
     
     def preprocess(self, im: torch.Tensor | list[np.ndarray]) -> torch.Tensor:
         # Slightly optimized for grayscale images of fixed size.
@@ -936,18 +937,8 @@ class OptimizedDetectionPredictor(DetectionPredictor):
             im = im.half() / 255
         else:        
             im = im.float() / 255
+        self._last_preprocessed = im
         return im
-        
-
-    def postprocess(self, preds, img, orig_imgs, **kwargs):
-        results = super().postprocess(preds, img, orig_imgs, **kwargs)
-        # We only use one of the channels – they are all the same
-        gray_batch = img[:, 0]
-        boxes_batch = [result.boxes.xyxy for result in results]
-        custom_results = extract_patches_centroid_theta(gray_batch, boxes_batch)
-        for result, custom in zip(results, custom_results):
-            result.custom = custom
-        return results
 
 
 def export_tensorrt_engine_with_progress(parent, model, roi_size, half, batch_size):
@@ -1040,18 +1031,7 @@ class YoloBackgroundRemover(QtCore.QThread):
             self.model = YOLO(exported_file, task="detect")
         else:
             self.model = model
-
-        self.predictor = OptimizedDetectionPredictor(
-            overrides={
-                "conf": self.inference_params["conf_threshold"],
-                "half": self.inference_params["half_precision"],
-                "batch": self.inference_params["batch_size"],
-                "save": False,
-                "rect": False,
-            }
-        )
-        self.predictor.setup_model(self.model.model, verbose=False)
-        self.model.predictor = self.predictor
+        
         self.track_file_queue = QueueWithSignals(
             queue.Queue(), "Track file writing", parent=self
         )
@@ -1077,15 +1057,26 @@ class YoloBackgroundRemover(QtCore.QThread):
                 conf=conf,
                 iou=iou,
                 half=half,
+                predictor=OptimizedDetectionPredictor,
             )
+        # We only use one of the channels – they are all the same
+        gray_batch = self.model.predictor._last_preprocessed[:, 0]
+        boxes_batch = [
+            result.boxes.xyxy.to(device=self.model.predictor._last_preprocessed.device)
+            for result in results
+        ]
+        features = extract_patches_centroid_theta(gray_batch, boxes_batch)                
         results = [
             {
-                "boxes": r.custom["boxes_int"].cpu(),
-                "masked_image": r.custom["masked_image"].cpu().numpy(),
-                "orientation": r.custom["orientation"],
-                "centroid": r.custom["centroid"],
+                "boxes": f["boxes_int"].cpu(),
+                "masked_image": f["masked_image"].cpu().numpy(),
+                "orientation": f["orientation"],
+                "centroid": f["centroid"],
+                "id": r.boxes.id.int().cpu().numpy()
+                if r.boxes.is_track
+                else -np.ones(f["boxes_int"].shape[0]),
             }
-            for r in results
+            for r, f in zip(results, features)
         ]
 
         torch.cuda.empty_cache()
@@ -1135,6 +1126,7 @@ class YoloBackgroundRemover(QtCore.QThread):
             masked_images = [r["masked_image"] for r in results]
             orientations = [r["orientation"] for r in results]
             centroids = [r["centroid"] for r in results]
+            track_ids = [r["id"] for r in results]
 
             # Write results to track file
             self.track_file_queue.put(
@@ -1144,6 +1136,7 @@ class YoloBackgroundRemover(QtCore.QThread):
                     "relative_start_idx": relative_idx - buffer_size + 1,
                     "n_frames": buffer_size,
                     "bounding_boxes": bounding_boxes,
+                    "track_ids": track_ids,
                     "orientations": orientations,
                     "centroids": centroids,
                 }
@@ -1743,6 +1736,7 @@ class TrackFileThread(QtCore.QThread):
                 n_frames,
                 epoch,
                 relative_start_idx,
+                track_ids,
                 bounding_boxes,
                 orientations,
                 centroids,
@@ -1751,6 +1745,7 @@ class TrackFileThread(QtCore.QThread):
                 task["n_frames"],
                 task["epoch"],
                 task["relative_start_idx"],
+                task["track_ids"],
                 task["bounding_boxes"],
                 task["orientations"],
                 task["centroids"],
