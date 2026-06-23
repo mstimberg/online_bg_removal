@@ -175,6 +175,22 @@ DEFAULT_TRACK_SETTINGS["packages"]["norfair"] = {
     ),
 }
 
+DEFAULT_TRACK_SETTINGS["packages"]["yolo"] = {
+    "tracker_type": Setting(
+        name="tracker_type",
+        doc="The tracker to use",
+        type=str,
+        options=[
+            "botsort",
+            "bytetrack",
+            "ocsort",
+            "deepocsort",
+            "fasttrack",
+            "tracktrack",
+        ],
+    )
+}
+
 
 # Convenience class to build simple GUI for settings
 class SettingGUI(QtWidgets.QWidget):
@@ -1049,16 +1065,31 @@ class YoloBackgroundRemover(QtCore.QThread):
         super().start(*args, **kwds)
         self.track_file_writer.start()
 
-    def find_cells(self, frames, conf=0.2, iou=0.7, half=False):    
+    def find_cells(self, frames, conf=0.2, iou=0.7, half=False):
         with torch.no_grad():
-            results = self.model.predict(
-                frames,
-                imgsz=frames[0].shape[:2],
-                conf=conf,
-                iou=iou,
-                half=half,
-                predictor=OptimizedDetectionPredictor,
-            )
+            if self.link_tracks and self.track_settings["package"] == "yolo":
+                results = self.model.track(
+                                    frames,
+                                    imgsz=frames[0].shape[:2],
+                                    batch=self.inference_params["batch_size"],
+                                    rect=False,
+                                    conf=conf,
+                                    iou=iou,
+                                    half=half,
+                                    persist=True,
+                                    predictor=OptimizedDetectionPredictor,
+                                )
+            else:
+                results = self.model.predict(
+                    frames,
+                    imgsz=frames[0].shape[:2],
+                    batch=self.inference_params["batch_size"],
+                    rect=False,
+                    conf=conf,
+                    iou=iou,
+                    half=half,
+                    predictor=OptimizedDetectionPredictor,
+                )
         # We only use one of the channels – they are all the same
         gray_batch = self.model.predictor._last_preprocessed[:, 0]
         boxes_batch = [
@@ -1066,21 +1097,20 @@ class YoloBackgroundRemover(QtCore.QThread):
             for result in results
         ]
         features = extract_patches_centroid_theta(gray_batch, boxes_batch)                
-        results = [
-            {
+        augmented_results = []
+        for r, f in zip(results, features):
+            result_set = {
                 "boxes": f["boxes_int"].cpu(),
                 "masked_image": f["masked_image"].cpu().numpy(),
                 "orientation": f["orientation"],
-                "centroid": f["centroid"],
-                "id": r.boxes.id.int().cpu().numpy()
-                if r.boxes.is_track
-                else -np.ones(f["boxes_int"].shape[0]),
+                "centroid": f["centroid"]
             }
-            for r, f in zip(results, features)
-        ]
+            if r.boxes.is_track:
+                result_set["id"] = r.boxes.id.int().cpu().numpy()
+            augmented_results.append(result_set)
 
         torch.cuda.empty_cache()
-        return results
+        return augmented_results
 
     def handle_frame(self, masked_image, frame, epoch, relative_idx, idx):        
         # We start our file names with 1 for ffmpeg
@@ -1126,21 +1156,23 @@ class YoloBackgroundRemover(QtCore.QThread):
             masked_images = [r["masked_image"] for r in results]
             orientations = [r["orientation"] for r in results]
             centroids = [r["centroid"] for r in results]
-            track_ids = [r["id"] for r in results]
+            if self.link_tracks and self.track_settings["package"] == "yolo":
+                track_ids = [r["id"] for r in results]
 
             # Write results to track file
-            self.track_file_queue.put(
-                {
-                    "idx": idx,
-                    "epoch": epoch,
-                    "relative_start_idx": relative_idx - buffer_size + 1,
-                    "n_frames": buffer_size,
-                    "bounding_boxes": bounding_boxes,
-                    "track_ids": track_ids,
-                    "orientations": orientations,
-                    "centroids": centroids,
-                }
-            )
+            track_task = {
+                "idx": idx,
+                "epoch": epoch,
+                "relative_start_idx": relative_idx - buffer_size + 1,
+                "n_frames": buffer_size,
+                "bounding_boxes": bounding_boxes,
+                "orientations": orientations,
+                "centroids": centroids,
+            }
+            if self.link_tracks and self.track_settings["package"] == "yolo":
+                track_task["track_ids"] = track_ids
+
+            self.track_file_queue.put(track_task)
 
             for i, (orig_frame, masked_image) in enumerate(
                 zip(self.buffer, masked_images)
@@ -1264,7 +1296,7 @@ class FileWriterThread(QtCore.QThread):
         compression_algorithm,
         fps,
         task_queue,
-        track_queue,
+        track_queue=None,
         wait_for=1,
         delete_files=False,
         delete_compressed_files=False,
@@ -1764,10 +1796,28 @@ class TrackFileThread(QtCore.QThread):
 
             # We write the file manually, no need to go through pandas
             with open(fname, "wt") as f:
-                for frame, (center, boxes, angles) in enumerate(zip(centroids, bounding_boxes, orientations)):
-                    # No headers for easier merging
-                    for (x, y), (b0, b1, b2, b3), angle in zip(center, boxes, angles):
-                        f.write(f"{frame + start_idx}\t{x}\t{y}\t{b0}\t{b1}\t{b2}\t{b3}\t{angle:.2f}\n")
+                if self.link_tracks and self.track_settings["package"] == "yolo":
+                    for frame, (track_id, center, boxes, angles) in enumerate(
+                        zip(track_ids, centroids, bounding_boxes, orientations)
+                    ):
+                        # No headers for easier merging
+                        for track, (x, y), (b0, b1, b2, b3), angle in zip(
+                            track_id, center, boxes, angles
+                        ):
+                            f.write(
+                                f"{frame + start_idx}\t{int(track)}\t{x}\t{y}\t{b0}\t{b1}\t{b2}\t{b3}\t{angle:.2f}\n"
+                            )
+                else:
+                    for frame, (center, boxes, angles) in enumerate(
+                        zip(centroids, bounding_boxes, orientations)
+                    ):
+                        # No headers for easier merging
+                        for (x, y), (b0, b1, b2, b3), angle in zip(
+                            center, boxes, angles
+                        ):
+                            f.write(
+                                f"{frame + start_idx}\t{x}\t{y}\t{b0}\t{b1}\t{b2}\t{b3}\t{angle:.2f}\n"
+                            )
             self.track_queue.task_done(last_idx)
 
         logger.info("TrackFileThread finished")
@@ -1782,7 +1832,10 @@ class TrackFileThread(QtCore.QThread):
         # Concatenate files
         with open(fname, "wt") as out_f:
             # Write header
-            out_f.write("frame\ty\tx\tbbox-0\tbbox-1\tbbox-2\tbbox-3\tangle\n")
+            if self.link_tracks and self.track_settings["package"] == "yolo":
+                out_f.write("frame\tid\ty\tx\tbbox-0\tbbox-1\tbbox-2\tbbox-3\tangle\n")
+            else:
+                out_f.write("frame\ty\tx\tbbox-0\tbbox-1\tbbox-2\tbbox-3\tangle\n")
             for in_fname in self.track_file_list:
                 with open(in_fname, "rt") as in_f:
                     shutil.copyfileobj(in_f, out_f)
@@ -1835,6 +1888,10 @@ class TrackFileThread(QtCore.QThread):
         if "length" in df.columns:
             df[["length", "width"]] *= self.pixel_size
 
+        # Yolo did the tracking on-line, so nothing else is left to do
+        if package == "yolo":
+            return df
+        
         # 2. Convert search range and memory to µm and frames
         search_range = settings["maximum_speed"] / self.fps
         memory = int(round(settings["memory"] * self.fps))
@@ -2066,7 +2123,6 @@ class ProgressDialog(QtWidgets.QDialog):
             queue.PriorityQueue(), "Background removal", parent=self
         )
         self.video_queue = None
-        self.track_queue = None
         self.queues = {
             "Files read": self.file_read_queue,
             "Background removal": self.processing_queue,
@@ -2231,7 +2287,6 @@ class ProgressDialog(QtWidgets.QDialog):
         self.dir_observer = Observer()
         self.background_file_watcher = FileWatcher(self, dirname, self.fileno_offset, self.fileno_step)
         self.dir_observer.schedule(self.background_file_watcher, dirname)
-        self.track_queue = None
         self.video_thread = None
 
         if self.record_video:
@@ -2275,7 +2330,6 @@ class ProgressDialog(QtWidgets.QDialog):
         self.file_writer = FileWriterThread(
             parent=self,
             task_queue=self.file_write_queue,
-            track_queue=self.track_queue,
             wait_for=wait_for,
             **self.file_write_params,
         )
@@ -2801,7 +2855,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         except (FileNotFoundError, IOError, yaml.YAMLError) as ex:
             logger.warning(f"Could not load last settings: {ex}")            
 
-        self.setWindowTitle("Cell identification settings")
+        self.setWindowTitle("Yolo cell detection/tracking")
         self.resize(1000, 800)
         self.central_widget = QtWidgets.QWidget()
         self.setCentralWidget(self.central_widget)
@@ -3031,14 +3085,16 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         layout.addWidget(self.pixel_size)
         tracking_layout.addLayout(layout)
 
+        layout = QtWidgets.QHBoxLayout()
         self.movement_features = QtWidgets.QCheckBox("&Movement features")
         self.movement_features.setChecked(prev_settings.get("tracking", {}).get("movement_features", True))
-        tracking_layout.addWidget(self.movement_features)
+        layout.addWidget(self.movement_features)
 
         self.zip_tracking_file = QtWidgets.QCheckBox("&Zip file")
         self.zip_tracking_file.setChecked(prev_settings.get("tracking", {}).get("zip_tracking_file", True))
-        tracking_layout.addWidget(self.zip_tracking_file)
-        
+        layout.addWidget(self.zip_tracking_file)
+
+        tracking_layout.addLayout(layout)
         controls_layout.addWidget(tracking_group)
 
         if self.model_file.text():
