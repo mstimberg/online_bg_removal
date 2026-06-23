@@ -2784,6 +2784,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/networkx-3.6.1-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/nvidia/label/cuda-12.4.1/linux-64/nsight-compute-2024.1.1.4-0.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/linux-64/numpy-1.26.4-py312heda63a1_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/nvidia-ml-py-13.610.43-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/ocl-icd-2.3.3-hb9d3cd8_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/opencl-headers-2025.06.13-hecca717_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/opencv-4.10.0-qt6_py312hac6a15e_603.conda
@@ -2846,7 +2847,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/trackpy-0.7-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/typing_extensions-4.15.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2025c-hc9c84f9_1.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/ultralytics-8.4.62-pyhb551730_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/ultralytics-8.4.75-pyhb551730_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/unicodedata2-17.0.1-py312h4c3975b_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/urllib3-2.5.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/watchdog-6.0.0-py312h20c3967_3.conda
@@ -3084,6 +3085,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/networkx-3.6.1-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/nvidia/label/cuda-12.4.1/win-64/nsight-compute-2024.1.1.4-0.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/win-64/numpy-1.26.4-py312h8753938_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/nvidia-ml-py-13.610.43-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/opencl-headers-2025.06.13-h826ebb9_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/opencv-4.10.0-qt6_py312hfab33ed_603.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/openexr-3.2.2-h9aba623_2.conda
@@ -3144,7 +3146,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/noarch/typing_extensions-4.15.0-pyhcf101f3_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/tzdata-2025c-hc9c84f9_1.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/ucrt-10.0.26100.0-h57928b3_0.conda
-      - conda: https://conda.anaconda.org/conda-forge/noarch/ultralytics-8.4.62-pyhb551730_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/noarch/ultralytics-8.4.75-pyhb551730_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/unicodedata2-17.0.1-py312he06e257_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/urllib3-2.5.0-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/vc-14.5-h1b7c187_37.conda
@@ -10782,6 +10784,20 @@ packages:
   - pkg:pypi/numpy?source=hash-mapping
   size: 6495445
   timestamp: 1707226412944
+- conda: https://conda.anaconda.org/conda-forge/noarch/nvidia-ml-py-13.610.43-pyhd8ed1ab_0.conda
+  sha256: 664b0f81fdc1f5ecd046feac22d85721b475a62a87e98e7a09dc20547f16e8d9
+  md5: 17cdeea29f316aba0c85b4886183418e
+  depends:
+  - python >=3.10
+  constrains:
+  - nvidia-ml ==9999999999
+  - pynvml ~=13.0
+  license: BSD-3-Clause
+  license_family: BSD
+  purls:
+  - pkg:pypi/nvidia-ml-py?source=hash-mapping
+  size: 50107
+  timestamp: 1780355713540
 - conda: https://conda.anaconda.org/conda-forge/linux-64/ocl-icd-2.3.3-hb9d3cd8_0.conda
   sha256: 2254dae821b286fb57c61895f2b40e3571a070910fdab79a948ff703e1ea807b
   md5: 56f8947aa9d5cf37b0b3d43b83f34192
@@ -13525,12 +13541,13 @@ packages:
   purls: []
   size: 694692
   timestamp: 1756385147981
-- conda: https://conda.anaconda.org/conda-forge/noarch/ultralytics-8.4.62-pyhb551730_0.conda
-  sha256: 210ed156a2d1282c6e20777de3010267308e7369b13c4bd5fbad18eff1bf02bb
-  md5: 89c5947b502fa020a482ad6069cce263
+- conda: https://conda.anaconda.org/conda-forge/noarch/ultralytics-8.4.75-pyhb551730_0.conda
+  sha256: f60258376acb60232c379f3882bd38eb49839b419db1a6aab82f79b2c1e3f213
+  md5: 9d2eb02c36e7c8872b0dd8079ebce674
   depends:
   - matplotlib-base >=3.3.0
   - numpy >=1.22.2
+  - nvidia-ml-py >=12.0.0
   - opencv >=4.6.0
   - pillow >=7.1.2
   - polars
@@ -13542,10 +13559,11 @@ packages:
   - scipy >=1.4.1
   - seaborn >=0.11.0
   license: AGPL-3.0-only
+  license_family: AGPL
   purls:
   - pkg:pypi/ultralytics?source=hash-mapping
-  size: 930261
-  timestamp: 1780949110121
+  size: 969801
+  timestamp: 1782085510108
 - conda: https://conda.anaconda.org/conda-forge/linux-64/unicodedata2-17.0.1-py312h4c3975b_0.conda
   sha256: 895bbfe9ee25c98c922799de901387d842d7c01cae45c346879865c6a907f229
   md5: 0b6c506ec1f272b685240e70a29261b8

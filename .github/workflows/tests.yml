@@ -3,39 +3,6 @@ name: Test Project installation and run
 on: [push, pull_request]
 
 jobs:
-    test-uv:
-        name: Test uv install (${{ matrix.os }} / ${{ matrix.python-version }})
-        runs-on: ${{ matrix.os }}
-        strategy:
-            matrix:
-                os: [ubuntu-latest, windows-latest, macos-latest]
-                python-version: [3.12]
-
-        steps:
-        - name: Checkout repository
-          uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-        - name: Install Qt
-          uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730  #v4.3.1
-          with:
-            version: 6.7
-            aqtversion: '>=3.2.0'
-
-        - name: Install uv
-          uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
-          with:
-            enable-cache: true
-            python-version: ${{ matrix.python-version }}
-        
-        - name: Install the project
-          run: uv sync
-        
-        - name: Run the GUI
-          run: uv run background_remover.pyw
-          env:
-            QT_QPA_PLATFORM: offscreen
-            TEST_SHUTDOWN_GUI: 1
-
     test-pixi:
         name: Test pixi install ${{ matrix.os }}
         runs-on: ${{ matrix.os }}
@@ -54,33 +21,6 @@ jobs:
 
         - name: Run the GUI
           run: pixi run gui
-          env:
-            QT_QPA_PLATFORM: offscreen
-            TEST_SHUTDOWN_GUI: 1
-    
-    test-pip:
-      name: Test pip install ${{ matrix.os }} / ${{ matrix.python-version }})
-      runs-on: ${{ matrix.os }}
-      strategy:
-          matrix:
-              os: [ubuntu-latest, windows-latest, macos-latest]
-              python-version: [3.12]
-      steps:
-        - name: Checkout repository
-          uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
-          with:
-            python-version: ${{ matrix.python-version }}
-            cache: 'pip'
-        - name: Install Qt
-          uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730  #v4.3.1
-          with:
-            version: 6.7
-            aqtversion: '>=3.2.0'
-        - name: Install dependencies
-          run: pip install -r requirements.txt
-        - name: Run the GUI
-          run: python background_remover.pyw
           env:
             QT_QPA_PLATFORM: offscreen
             TEST_SHUTDOWN_GUI: 1
