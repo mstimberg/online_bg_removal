@@ -1,0 +1,70 @@
+[workspace]
+name = "online-bg-removal"
+version = "0.1.0"
+readme = "README.md"
+channels = ["conda-forge"]
+platforms = ["linux-64",
+             { "name"="linux-64-cuda", "platform"="linux-64", "cuda"="12"},
+             "win-64",
+             { "name"="win-64-cuda", "platform"="win-64", "cuda"="12"},
+             "osx-arm64"]
+
+[dependencies]
+imageio = ">=2.37.0,<3"
+imageio-ffmpeg = ">=0.6.0,<0.7"
+pandas = ">=3.0.3,<4"
+psutil = ">=7.2.2,<8"
+libtiff = ">=4.7.2,<5"
+pyqtgraph = ">=0.14.0,<0.15"
+pyside6 = ">=6.7.2,<7"
+pyyaml = ">=6.0.3,<7"
+scikit-image = ">=0.26.0,<0.27"
+trackpy = ">=0.7,<0.8"
+watchdog = ">=6.0.0,<7"
+python = ">=3.12.13,<3.13"
+rich = "<15"
+numpy = "<2"
+imagecodecs = ">=2024.12.30,<2027"
+tqdm = ">=4.68.4,<5"
+
+[feature.tf.pypi-dependencies]
+tensorflow = ">=2.11"
+
+[feature.tf.dependencies]
+keras = ">=2.11"
+
+[activation.env]
+TF_FORCE_GPU_ALLOW_GROWTH = "true"
+
+[target.unix.activation.env]
+LD_LIBRARY_PATH = "$LD_LIBRARY_PATH:$CONDA_PREFIX/lib"
+
+[target.linux-64.dependencies]
+qt6-gtk-platformtheme = ">=6.7.2,<7"
+
+[feature.gpu]
+platforms = ["linux-64-cuda", "win-64-cuda"]
+
+[feature.gpu.dependencies]
+cupy = ">=13.3.0"
+cuda = "12.*"
+pytorch-gpu = "*"
+torchvision = "*"
+
+[feature.yolo.dependencies]
+ultralytics = "=8.4.60"
+onnx = ">=1.12.0,<2.0.0"
+onnxslim = ">=0.1.71"
+onnxruntime = "*"
+
+[feature.yolo.pypi-dependencies]
+lap = ">=0.5.12"
+
+[environments]
+tf = ["tf"]
+tf-gpu = ["tf", "gpu"]
+gpu = ["gpu"]
+yolo = ["gpu", "yolo"]
+
+[tasks]
+gui = "python background_remover.pyw"
