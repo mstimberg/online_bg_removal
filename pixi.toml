@@ -61,6 +61,9 @@ onnxruntime = "*"
 lap = ">=0.5.12"
 norfair = "*"
 
+[feature.yolo.target.win-64-cuda.pypi-dependencies]
+triton-windows = ">=3.7.1.post27, <4"
+
 [environments]
 tf = ["tf"]
 tf-gpu = ["tf", "gpu"]
