@@ -1768,7 +1768,6 @@ class TrackFileThread(QtCore.QThread):
                 n_frames,
                 epoch,
                 relative_start_idx,
-                track_ids,
                 bounding_boxes,
                 orientations,
                 centroids,
@@ -1777,11 +1776,11 @@ class TrackFileThread(QtCore.QThread):
                 task["n_frames"],
                 task["epoch"],
                 task["relative_start_idx"],
-                task["track_ids"],
                 task["bounding_boxes"],
                 task["orientations"],
                 task["centroids"],
             )
+            track_ids = task.get("track_ids", None)
             if epoch == -1:
                 start_idx = last_idx - n_frames + 1
             else:
