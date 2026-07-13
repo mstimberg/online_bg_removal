@@ -59,6 +59,7 @@ onnxruntime = "*"
 
 [feature.yolo.pypi-dependencies]
 lap = ">=0.5.12"
+norfair = "*"
 
 [environments]
 tf = ["tf"]
