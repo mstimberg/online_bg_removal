@@ -1158,7 +1158,15 @@ class YoloBackgroundRemover(QtCore.QThread):
             orientations = [r["orientation"] for r in results]
             centroids = [r["centroid"] for r in results]
             if self.link_tracks and self.track_settings["package"] == "yolo":
-                track_ids = [r["id"] for r in results]
+                track_ids = []
+                for i, r in enumerate(results):
+                    if (track_id := r.get("id", None)) is not None:
+                        track_ids.append(track_id)
+                    else:
+                        logger.warning(
+                            f"Yolo did not return IDs for frame {idx - buffer_size + i + 1}"
+                        )
+                        track_ids.append(-1*torch.ones_like(r["orientation"]))
 
             # Write results to track file
             track_task = {
@@ -1804,9 +1812,16 @@ class TrackFileThread(QtCore.QThread):
                         for track, (x, y), (b0, b1, b2, b3), angle in zip(
                             track_id, center, boxes, angles
                         ):
-                            f.write(
-                                f"{frame + start_idx}\t{int(track)}\t{x}\t{y}\t{b0}\t{b1}\t{b2}\t{b3}\t{angle:.2f}\n"
-                            )
+                            if track >= 0:
+                                f.write(
+                                    f"{frame + start_idx}\t{int(track)}\t{x}\t{y}\t{b0}\t{b1}\t{b2}\t{b3}\t{angle:.2f}\n"
+                                )
+                            else:
+                                # Do not write any idea if Yolo did not return one
+                                f.write(
+                                    f"{frame + start_idx}\t\t{x}\t{y}\t{b0}\t{b1}\t{b2}\t{b3}\t{angle:.2f}\n"
+                                )
+                            
                 else:
                     for frame, (center, boxes, angles) in enumerate(
                         zip(centroids, bounding_boxes, orientations)
