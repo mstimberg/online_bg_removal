@@ -1105,7 +1105,8 @@ class YoloBackgroundRemover(QtCore.QThread):
                 "boxes": f["boxes_int"].cpu(),
                 "masked_image": f["masked_image"].cpu().numpy(),
                 "orientation": f["orientation"],
-                "centroid": f["centroid"]
+                "centroid": f["centroid"],
+                "conf": r.boxes.conf,
             }
             if r.boxes.is_track:
                 result_set["id"] = r.boxes.id.int().cpu().numpy()
@@ -1158,6 +1159,7 @@ class YoloBackgroundRemover(QtCore.QThread):
             masked_images = [r["masked_image"] for r in results]
             orientations = [r["orientation"] for r in results]
             centroids = [r["centroid"] for r in results]
+            conf = [r["conf"] for r in results]
             if self.link_tracks and self.track_settings["package"] == "yolo":
                 track_ids = []
                 for i, r in enumerate(results):
@@ -1178,6 +1180,7 @@ class YoloBackgroundRemover(QtCore.QThread):
                 "bounding_boxes": bounding_boxes,
                 "orientations": orientations,
                 "centroids": centroids,
+                "conf": conf,
             }
             if self.link_tracks and self.track_settings["package"] == "yolo":
                 track_task["track_ids"] = track_ids
@@ -1781,6 +1784,7 @@ class TrackFileThread(QtCore.QThread):
                 bounding_boxes,
                 orientations,
                 centroids,
+                confs,
             ) = (
                 task["idx"],
                 task["n_frames"],
@@ -1789,6 +1793,7 @@ class TrackFileThread(QtCore.QThread):
                 task["bounding_boxes"],
                 task["orientations"],
                 task["centroids"],
+                task["conf"],
             )
             track_ids = task.get("track_ids", None)
             if epoch == -1:
@@ -1805,34 +1810,34 @@ class TrackFileThread(QtCore.QThread):
 
             # We write the file manually, no need to go through pandas
             with open(fname, "wt") as f:
-                if self.link_tracks and self.track_settings["package"] == "yolo":
-                    for frame, (track_id, center, boxes, angles) in enumerate(
-                        zip(track_ids, centroids, bounding_boxes, orientations)
+                if self.link and self.track_settings["package"] == "yolo":
+                    for frame, (track_id, center, boxes, angles, conf) in enumerate(
+                        zip(track_ids, centroids, bounding_boxes, orientations, confs)
                     ):
                         # No headers for easier merging
-                        for track, (x, y), (b0, b1, b2, b3), angle in zip(
-                            track_id, center, boxes, angles
+                        for track, (x, y), (b0, b1, b2, b3), angle, c in zip(
+                            track_id, center, boxes, angles, conf
                         ):
                             if track >= 0:
                                 f.write(
-                                    f"{frame + start_idx}\t{int(track)}\t{x}\t{y}\t{b0}\t{b1}\t{b2}\t{b3}\t{angle:.2f}\n"
+                                    f"{frame + start_idx}\t{int(track)}\t{x}\t{y}\t{b0}\t{b1}\t{b2}\t{b3}\t{angle:.2f}\t{c:.2f}\n"
                                 )
                             else:
                                 # Do not write any idea if Yolo did not return one
                                 f.write(
-                                    f"{frame + start_idx}\t\t{x}\t{y}\t{b0}\t{b1}\t{b2}\t{b3}\t{angle:.2f}\n"
+                                    f"{frame + start_idx}\t\t{x}\t{y}\t{b0}\t{b1}\t{b2}\t{b3}\t{angle:.2f}\t{c:.2f}\n"
                                 )
                             
                 else:
-                    for frame, (center, boxes, angles) in enumerate(
-                        zip(centroids, bounding_boxes, orientations)
+                    for frame, (center, boxes, angles, conf) in enumerate(
+                        zip(centroids, bounding_boxes, orientations, confs)
                     ):
                         # No headers for easier merging
-                        for (x, y), (b0, b1, b2, b3), angle in zip(
-                            center, boxes, angles
+                        for (x, y), (b0, b1, b2, b3), angle, c  in zip(
+                            center, boxes, angles, conf
                         ):
                             f.write(
-                                f"{frame + start_idx}\t{x}\t{y}\t{b0}\t{b1}\t{b2}\t{b3}\t{angle:.2f}\n"
+                                f"{frame + start_idx}\t{x}\t{y}\t{b0}\t{b1}\t{b2}\t{b3}\t{angle:.2f}\t{c:.2f}\n"
                             )
             self.track_queue.task_done(last_idx)
 
@@ -1849,9 +1854,9 @@ class TrackFileThread(QtCore.QThread):
         with open(fname, "wt") as out_f:
             # Write header
             if self.link_tracks and self.track_settings["package"] == "yolo":
-                out_f.write("frame\tid\tx\ty\tbbox-0\tbbox-1\tbbox-2\tbbox-3\tangle\n")
+                out_f.write("frame\tid\tx\ty\tbbox-0\tbbox-1\tbbox-2\tbbox-3\tangle\tconf\n")
             else:
-                out_f.write("frame\tx\ty\tbbox-0\tbbox-1\tbbox-2\tbbox-3\tangle\n")
+                out_f.write("frame\tx\ty\tbbox-0\tbbox-1\tbbox-2\tbbox-3\tangle\tconf\n")
             for in_fname in self.track_file_list:
                 with open(in_fname, "rt") as in_f:
                     shutil.copyfileobj(in_f, out_f)
