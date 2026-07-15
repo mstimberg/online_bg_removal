@@ -836,8 +836,8 @@ def extract_patches_centroid_theta(image, boxes_float):
 
         widths = x2 - x1
         heights = y2 - y1
-        Hmax = int(heights.max().item())
-        Wmax = int(widths.max().item())
+        Hmax = heights.max().to(int)
+        Wmax = widths.max().to(int)
 
         # 3) Build padded batched patches tensor
         y_grid = torch.arange(Hmax, device=device, dtype=torch.long).view(1, Hmax, 1)   # local y
@@ -926,11 +926,12 @@ def extract_patches_centroid_theta(image, boxes_float):
 
 def compute_otsu_threshold(valid_pixels):
     threshold_range = (
-            torch.arange(
-                int(torch.min(valid_pixels * 255) + 1), int(torch.max(valid_pixels * 255))
-            )
-            / 255.0
+        torch.arange(
+            (torch.min(valid_pixels * 255) + 1).to(int),
+            torch.max(valid_pixels * 255).to(int),
         )
+        / 255.0
+    )
     if threshold_range.numel() == 0:
         threshold = valid_pixels.max()
     else:
