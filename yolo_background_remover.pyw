@@ -1849,9 +1849,9 @@ class TrackFileThread(QtCore.QThread):
         with open(fname, "wt") as out_f:
             # Write header
             if self.link_tracks and self.track_settings["package"] == "yolo":
-                out_f.write("frame\tid\ty\tx\tbbox-0\tbbox-1\tbbox-2\tbbox-3\tangle\n")
+                out_f.write("frame\tid\tx\ty\tbbox-0\tbbox-1\tbbox-2\tbbox-3\tangle\n")
             else:
-                out_f.write("frame\ty\tx\tbbox-0\tbbox-1\tbbox-2\tbbox-3\tangle\n")
+                out_f.write("frame\tx\ty\tbbox-0\tbbox-1\tbbox-2\tbbox-3\tangle\n")
             for in_fname in self.track_file_list:
                 with open(in_fname, "rt") as in_f:
                     shutil.copyfileobj(in_f, out_f)
