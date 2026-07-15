@@ -2837,36 +2837,44 @@ class ProgressDialog(QtWidgets.QDialog):
 class FindCellsWorker(QtCore.QThread):
     finished = QtCore.Signal()
     
-    def __init__(self, image, model, conf, iou, half, initialize=False):
-        self.image = torch.tensor(
-            np.broadcast_to(image[None, None, :, :], (1, 3) + image.shape)
-            / 255.0,
-        )
-        self.conf = conf
-        self.iou = iou
-        self.half = half
-        self.model = model
-        self.initialize = initialize
+    def __init__(self, queue: queue.LifoQueue):
+        self.queue = queue        
         super().__init__()
 
     def run(self):
-        with torch.no_grad():
-            results = self.model(
-                self.image,
-                imgsz=self.image.shape[2:],
-                conf=self.conf,
-                iou=self.iou,
+        while True:
+            task = self.queue.get()
+            if task is None:  # stop marker
+                break
+            model, image, conf, iou, initialize = (
+                task["model"],
+                task["image"],
+                task["conf"],
+                task["iou"],
+                task["initialize"],
             )
-        post_results = extract_patches_centroid_theta(
-            self.image[:, 0, :, :].to(device=results[0].boxes.xyxy.device),
-            [results[0].boxes.xyxy],
-        )
-        self.boxes = post_results[0]["boxes_int"].cpu()
-        self.mask = create_mask(self.boxes, self.image.shape[2:])
-        self.confidence = results[0].boxes.conf.cpu().numpy()
-        self.centroids = post_results[0]["centroid"].cpu().numpy()
-        self.orientations = post_results[0]["orientation"].cpu().numpy()
-        self.finished.emit()
+            image = torch.tensor(
+                np.broadcast_to(image[None, None, :, :], (1, 3) + image.shape) / 255.0,
+            )
+            with torch.no_grad():
+                results = model(
+                    image,
+                    imgsz=image.shape[2:],
+                    conf=conf,
+                    iou=iou,
+                )
+            post_results = extract_patches_centroid_theta(
+                image[:, 0, :, :].to(device=results[0].boxes.xyxy.device),
+                [results[0].boxes.xyxy],
+            )
+            self.boxes = post_results[0]["boxes_int"].cpu()
+            self.mask = create_mask(self.boxes, image.shape[2:])
+            self.confidence = results[0].boxes.conf.cpu().numpy()
+            self.centroids = post_results[0]["centroid"].cpu().numpy()
+            self.orientations = post_results[0]["orientation"].cpu().numpy()
+            self.image = image
+            self.initialize = initialize
+            self.finished.emit()
 
 # Inherit from Qt window
 class FileCompressorGui(QtWidgets.QMainWindow):
@@ -2894,10 +2902,6 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self.prev_roi_size = None
         self.inference_model = None
         self.masked_file_preview = None
-        self._bbox_squares = []
-        self._center_dots = []
-        self._orientation_lines = []
-        self._confidence_labels = []
 
         self.image_preview.ui.menuBtn.hide()
         self.image_preview.getHistogramWidget().hide()
@@ -3240,6 +3244,10 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self.task_items = 0
         self.file_number_timer = None
         self._from_automatic_threshold = False
+        self._find_cells_queue = queue.LifoQueue(1)
+        self._find_cells_worker = FindCellsWorker(self._find_cells_queue)
+        self._find_cells_worker.finished.connect(self.cells_finished)
+        self._find_cells_worker.start()
 
         # Set directory from command line
         if directory is not None:
@@ -3507,6 +3515,10 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             schedule=self.schedule,
         )
 
+        # Preview thread is no longer needed
+        self._find_cells_queue.put(None)
+        self._find_cells_worker.deleteLater()
+
         dialog.run()
         exit_reason = dialog.exec()
         if exit_reason == 1:  # We interpret "accepted" as quit
@@ -3556,21 +3568,6 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         if not self.roi_selector:
             return
 
-        for label, square, dot, line in zip(
-            self._confidence_labels,
-            self._bbox_squares,
-            self._center_dots,
-            self._orientation_lines,
-        ):
-            self.masked_preview.getView().removeItem(square)
-            self.masked_preview.getView().removeItem(label)
-            self.masked_preview.getView().removeItem(dot)
-            self.masked_preview.getView().removeItem(line)
-        self._bbox_squares.clear()
-        self._center_dots.clear()
-        self._orientation_lines.clear()
-        self._confidence_labels.clear()
-
         current_idx = self.image_preview.currentIndex
         roi_slice = get_roi_slice(self.roi_selector)
         image = np.asarray(self.preview_frames[current_idx])
@@ -3588,12 +3585,14 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             conf = self.conf_threshold.value()
             iou = self.iou.value()
             half_precision = self.half_precision.isChecked()
-            self.start_task("Identifiying cells")
-            self._find_cells_worker = FindCellsWorker(
-                image, self.inference_model, conf, iou, half_precision, initialize
-            )
-            self._find_cells_worker.finished.connect(self.cells_finished)
-            self._find_cells_worker.start()            
+            self.start_task("Identifiying cells")            
+            self._find_cells_queue.put({
+                "image": image,
+                "model": self.inference_model,
+                "conf": conf,
+                "iou": iou,
+                "initialize": initialize,
+            })
         else:
             self.cell_label.setText("")
             self.masked_file_preview = None
@@ -3612,6 +3611,18 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             view_box = self.masked_preview.getImageItem().getViewBox()
             state = view_box.getState()
         self.cell_label.setText(f"Found {len(boxes)} cells.")
+
+        for child in self.masked_preview.getView().allChildren():
+            # A bit dirty, but avoids us keeping a list of everything we add
+            if isinstance(
+                child,
+                (
+                    QtWidgets.QGraphicsRectItem,
+                    QtWidgets.QGraphicsLineItem,
+                    QtWidgets.QGraphicsTextItem,
+                ),
+            ):
+                self.masked_preview.getView().removeItem(child)
 
         # Build an RGBA composite: original image + semi-transparent mask overlay
         rgba = torch.zeros((*image.shape, 4), dtype=torch.uint8)
@@ -3639,18 +3650,15 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             square.setPen(pg.mkPen(pen_color, width=1))
 
             self.masked_preview.getView().addItem(square)
-            self._bbox_squares.append(square)
 
             label = pg.TextItem(
                 f"{confidence:.02f}", color=(200, 0, 0, 200), anchor=(0, 1)
             )
             label.setPos(x2, y1)
-            self._confidence_labels.append(label)
             self.masked_preview.getView().addItem(label)
             center_dot = QtWidgets.QGraphicsRectItem(cx-0.5, cy-0.5, 1, 1)
             center_dot.setPen(pg.mkPen(pen_color, width=1))
             center_dot.setBrush(pg.mkBrush(pen_color))
-            self._center_dots.append(center_dot)
             self.masked_preview.getView().addItem(center_dot)
             radius = min(x2 - x1, y2 - y1) / 2
             lx1, ly1, lx2, ly2 = (
@@ -3661,15 +3669,13 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             )
             orientation_line = QtWidgets.QGraphicsLineItem(lx1, ly1, lx2, ly2)
             orientation_line.setPen(pg.mkPen(pen_color, width=2))
-            self._orientation_lines.append(orientation_line)
             self.masked_preview.getView().addItem(orientation_line)
 
         # Restore zoom/pan
         if not initialize:
             view_box.setState(state)
         self.update_target_file_size()
-        self.finish_task()
-        self._find_cells_worker.deleteLater()
+        self.finish_task()        
 
     def update_target_file_size(self):
 
