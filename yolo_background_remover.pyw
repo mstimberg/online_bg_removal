@@ -949,7 +949,7 @@ class OptimizedDetectionPredictor(DetectionPredictor):
         im = np.stack(im)
         im = torch.from_numpy(im[..., 0]).to(self.model.device)
         im = im[:, None].expand(-1, 3, -1, -1) # (B, 3, H, W) — zero-copy view on GPU
-        if self.args.half:
+        if getattr(self.args, "half", False):
             im = im.half() / 255
         else:        
             im = im.float() / 255
@@ -1067,6 +1067,9 @@ class YoloBackgroundRemover(QtCore.QThread):
     def find_cells(self, frames, conf=0.2, iou=0.7, half=False):
         with torch.no_grad():
             if self.link_tracks and self.track_settings["package"] == "yolo":
+                tracker_config = os.path.join(
+                    "config", self.track_settings["yolo"]["tracker_type"] + ".yaml"
+                )
                 results = self.model.track(
                     frames,
                     imgsz=frames[0].shape[:2],
@@ -1074,6 +1077,7 @@ class YoloBackgroundRemover(QtCore.QThread):
                     rect=False,
                     conf=conf,
                     iou=iou,
+                    tracker=tracker_config,
                     persist=True,
                     predictor=OptimizedDetectionPredictor,
                 )
@@ -2376,6 +2380,12 @@ class ProgressDialog(QtWidgets.QDialog):
                 "link_tracks": True,
                 **self.track_settings,
             }
+            if settings["tracking"]["package"] == "yolo":
+                tracker_config = os.path.join("config", self.track_settings["yolo"]["tracker_type"]+".yaml")
+                with open(tracker_config) as f:
+                    yolo_settings = yaml.safe_load(f)
+                    settings["tracking"]["yolo"]["config_file"] = tracker_config
+                    settings["tracking"]["yolo"].update(yolo_settings)
         
         settings.update(self.file_write_params)
         if self.schedule:
