@@ -980,7 +980,6 @@ def export_tensorrt_engine_with_progress(parent, model, roi_size, half, batch_si
             result["exported_file"] = model.export(
                 format="engine",
                 imgsz=roi_size,
-                half=half,
                 nms=True,
                 batch=batch_size,
             )
@@ -1069,16 +1068,15 @@ class YoloBackgroundRemover(QtCore.QThread):
         with torch.no_grad():
             if self.link_tracks and self.track_settings["package"] == "yolo":
                 results = self.model.track(
-                                    frames,
-                                    imgsz=frames[0].shape[:2],
-                                    batch=self.inference_params["batch_size"],
-                                    rect=False,
-                                    conf=conf,
-                                    iou=iou,
-                                    half=half,
-                                    persist=True,
-                                    predictor=OptimizedDetectionPredictor,
-                                )
+                    frames,
+                    imgsz=frames[0].shape[:2],
+                    batch=self.inference_params["batch_size"],
+                    rect=False,
+                    conf=conf,
+                    iou=iou,
+                    persist=True,
+                    predictor=OptimizedDetectionPredictor,
+                )
             else:
                 results = self.model.predict(
                     frames,
@@ -1087,7 +1085,6 @@ class YoloBackgroundRemover(QtCore.QThread):
                     rect=False,
                     conf=conf,
                     iou=iou,
-                    half=half,
                     predictor=OptimizedDetectionPredictor,
                 )
         # We only use one of the channels – they are all the same
@@ -2828,7 +2825,6 @@ class FindCellsWorker(QtCore.QThread):
                 imgsz=self.image.shape[2:],
                 conf=self.conf,
                 iou=self.iou,
-                half=self.half,
             )
         post_results = extract_patches_centroid_theta(
             self.image[:, 0, :, :].to(device=results[0].boxes.xyxy.device),
@@ -3028,7 +3024,8 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         layout = QtWidgets.QHBoxLayout()
 
         self.half_precision = QtWidgets.QCheckBox("&Half precision: ")        
-        self.half_precision.setChecked(prev_settings.get("inference", {}).get("half_precision", False))        
+        self.half_precision.setChecked(False)
+        self.half_precision.setEnabled(False)
         self.half_precision.checkStateChanged.connect(lambda value: self.update_masked())
         layout.addWidget(self.half_precision)
         model_group_layout.addLayout(layout)
