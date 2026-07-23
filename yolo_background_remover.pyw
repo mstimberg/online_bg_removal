@@ -1081,6 +1081,7 @@ class YoloBackgroundRemover(QtCore.QThread):
                     tracker=tracker_config,
                     persist=True,
                     predictor=OptimizedDetectionPredictor,
+                    end2end=False,
                 )
             else:
                 results = self.model.predict(
@@ -1091,6 +1092,7 @@ class YoloBackgroundRemover(QtCore.QThread):
                     conf=conf,
                     iou=iou,
                     predictor=OptimizedDetectionPredictor,
+                    end2end=False, 
                 )
         # We only use one of the channels – they are all the same
         gray_batch = self.model.predictor._last_preprocessed[:, 0]
@@ -2396,6 +2398,7 @@ class ProgressDialog(QtWidgets.QDialog):
             "read_function": self.read_function.__name__,
             "inference": self.inference_params,            
         }
+        settings["inference"]["end2end"] = False
         if self.link_tracks:
             settings["tracking"] = {
                 "link_tracks": True,
@@ -2862,6 +2865,7 @@ class FindCellsWorker(QtCore.QThread):
                     imgsz=image.shape[2:],
                     conf=conf,
                     iou=iou,
+                    end2end=False,
                 )
             post_results = extract_patches_centroid_theta(
                 image[:, 0, :, :].to(device=results[0].boxes.xyxy.device),
