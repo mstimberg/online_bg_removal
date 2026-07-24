@@ -67,18 +67,6 @@ MAX_FFMPEG_PROCESSES = 4  # Maximum number of ffmpeg processes to run in paralle
 
 FRAMES_PER_ZIP = 1_000_000  # a single zip file...
 
-try:
-    import cupy as cp
-    cp.cuda.runtime.getDevice()
-except Exception:
-    print("Background remover: Cupy/GPU not available, falling back to CPU")
-    cp = None
-
-# Use xp as a shorthand for the numpy-like library we are using
-if cp:
-    xp = cp
-else:
-    xp = np
 
 # Class to store settings, docs, type, and min/max (or options) for each parameter
 @dataclass
@@ -2381,7 +2369,6 @@ class ProgressDialog(QtWidgets.QDialog):
         roi_slice = self.bg_params["roi_slice"]
         settings = {
             "start": datetime.now(),
-            "using_cupy": cp is not None,
             "original_size": list(self.bg_params["original_size"]),
             "dark_field": self.bg_params["dark_field"],
             "roi_xy": [roi_slice[1].start, roi_slice[0].start],
