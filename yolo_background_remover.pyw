@@ -67,6 +67,9 @@ MAX_FFMPEG_PROCESSES = 4  # Maximum number of ffmpeg processes to run in paralle
 
 FRAMES_PER_ZIP = 1_000_000  # a single zip file...
 
+# None: Use CUDA, if available, otherwise CPU.
+# Set to "mps" for MPS on MacOS
+DEVICE = None
 
 # Class to store settings, docs, type, and min/max (or options) for each parameter
 @dataclass
@@ -1070,6 +1073,7 @@ class YoloBackgroundRemover(QtCore.QThread):
                     persist=True,
                     predictor=OptimizedDetectionPredictor,
                     end2end=False,
+                    device=DEVICE,
                 )
             else:
                 results = self.model.predict(
@@ -1080,7 +1084,8 @@ class YoloBackgroundRemover(QtCore.QThread):
                     conf=conf,
                     iou=iou,
                     predictor=OptimizedDetectionPredictor,
-                    end2end=False, 
+                    end2end=False,
+                    device=DEVICE,
                 )
         # We only use one of the channels – they are all the same
         gray_batch = self.model.predictor._last_preprocessed[:, 0]
@@ -2853,6 +2858,7 @@ class FindCellsWorker(QtCore.QThread):
                     conf=conf,
                     iou=iou,
                     end2end=False,
+                    device=DEVICE,
                 )
             post_results = extract_patches_centroid_theta(
                 image[:, 0, :, :].to(device=results[0].boxes.xyxy.device),
