@@ -2848,18 +2848,19 @@ class FindCellsWorker(QtCore.QThread):
                 task["iou"],
                 task["initialize"],
             )
-            image = torch.tensor(
-                np.broadcast_to(image[None, None, :, :], (1, 3) + image.shape) / 255.0,
-            )
             with torch.no_grad():
-                results = model(
-                    image,
-                    imgsz=image.shape[2:],
+                results = model.predict(
+                    [image],
+                    imgsz=image.shape,
                     conf=conf,
                     iou=iou,
                     end2end=False,
+                    predictor=OptimizedDetectionPredictor,
                     device=DEVICE,
                 )
+            image = torch.tensor(
+                np.broadcast_to(image[None, None, :, :], (1, 3) + image.shape) / 255.0,
+            )
             post_results = extract_patches_centroid_theta(
                 image[:, 0, :, :].to(device=results[0].boxes.xyxy.device),
                 [results[0].boxes.xyxy],
