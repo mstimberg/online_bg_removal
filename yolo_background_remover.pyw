@@ -2860,6 +2860,7 @@ class FindCellsWorker(QtCore.QThread):
                 )
             image = torch.tensor(
                 np.broadcast_to(image[None, None, :, :], (1, 3) + image.shape) / 255.0,
+                dtype=torch.float32
             )
             post_results = extract_patches_centroid_theta(
                 image[:, 0, :, :].to(device=results[0].boxes.xyxy.device),
