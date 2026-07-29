@@ -904,9 +904,9 @@ def extract_patches_centroid_theta(image, boxes_float):
         minor_axis_length = 4.0 * torch.sqrt(eigvals[:, 0].clamp_min(0))
         major_axis_length = 4.0 * torch.sqrt(eigvals[:, 1].clamp_min(0))
         
-        # Moments are accumulated as (y, x), so the x/y difference is reversed here.
-        mu2_diff = mu02 - mu20
-        theta = torch.where(
+        mu2_diff = mu20 - mu02
+        # Negated for angle in image coordinates (y → downwards)
+        theta = -torch.where(
             mu2_diff == 0,
             torch.where(mu11 < 0, -np.pi / 4, np.pi / 4),
             0.5 * torch.arctan2(2 * mu11, mu2_diff),
@@ -2898,6 +2898,8 @@ class FindCellsWorker(QtCore.QThread):
             self.confidence = results[0].boxes.conf.cpu().numpy()
             self.centroids = post_results[0]["centroid"].cpu().numpy()
             self.orientations = post_results[0]["orientation"].cpu().numpy()
+            self.lengths = post_results[0]["major_axis_length"].cpu().numpy()
+            self.widths = post_results[0]["minor_axis_length"].cpu().numpy()
             self.image = image
             self.initialize = initialize
             self.finished.emit()
@@ -3632,6 +3634,8 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         image = self._find_cells_worker.image[0, 0, :, :].mul(255).to(dtype=torch.uint8)
         centroids = self._find_cells_worker.centroids
         orientations = self._find_cells_worker.orientations
+        lengths = self._find_cells_worker.lengths
+        widths = self._find_cells_worker.widths
         initialize = self._find_cells_worker.initialize
         if not initialize:
             view_box = self.masked_preview.getImageItem().getViewBox()
@@ -3646,6 +3650,7 @@ class FileCompressorGui(QtWidgets.QMainWindow):
                     QtWidgets.QGraphicsRectItem,
                     QtWidgets.QGraphicsLineItem,
                     QtWidgets.QGraphicsTextItem,
+                    QtWidgets.QGraphicsEllipseItem,
                 ),
             ):
                 self.masked_preview.getView().removeItem(child)
@@ -3669,8 +3674,8 @@ class FileCompressorGui(QtWidgets.QMainWindow):
         self.masked_file_preview = masked_file
         pen_color = QtGui.QColor("#C80000")
         pen_color.setAlpha(120)
-        for (cx, cy), angle, confidence, (x1, y1, x2, y2) in zip(
-            centroids, orientations, confidence, boxes
+        for (cx, cy), angle, w, h, confidence, (x1, y1, x2, y2) in zip(
+            centroids, orientations, widths, lengths, confidence, boxes
         ):
             square = QtWidgets.QGraphicsRectItem(x1, y1, x2-x1, y2-y1)            
             square.setPen(pg.mkPen(pen_color, width=1))
@@ -3686,16 +3691,11 @@ class FileCompressorGui(QtWidgets.QMainWindow):
             center_dot.setPen(pg.mkPen(pen_color, width=1))
             center_dot.setBrush(pg.mkBrush(pen_color))
             self.masked_preview.getView().addItem(center_dot)
-            radius = min(x2 - x1, y2 - y1) / 2
-            lx1, ly1, lx2, ly2 = (
-                cx + np.cos(angle) * radius,
-                cy + np.sin(angle) * radius,
-                cx - np.cos(angle) * radius,
-                cy - np.sin(angle) * radius,
-            )
-            orientation_line = QtWidgets.QGraphicsLineItem(lx1, ly1, lx2, ly2)
-            orientation_line.setPen(pg.mkPen(pen_color, width=2))
-            self.masked_preview.getView().addItem(orientation_line)
+            ellipse = QtWidgets.QGraphicsEllipseItem(cx - w/2, cy - h/2, w, h)
+            ellipse.setTransformOriginPoint(cx, cy)
+            ellipse.setRotation(np.rad2deg(angle))
+            ellipse.setPen(pg.mkPen(pen_color, width=1))
+            self.masked_preview.getView().addItem(ellipse)
 
         # Restore zoom/pan
         if not initialize:
