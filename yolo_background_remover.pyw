@@ -1831,13 +1831,17 @@ class TrackFileThread(QtCore.QThread):
             self.track_file_list.append(fname)
 
             # We write the file manually, no need to go through pandas
+            # Note that for consistency with previous code, bbox-0, etc. are bounding
+            # boxes in y,x instead of x,y coordinates (i.e. if they were integers they
+            # could be used for slicing of the image matrix with
+            # image[bbox-0:bbox-2, bbox-1:bbox-3] )
             with open(fname, "wt") as f:
                 if self.link and self.track_settings["package"] == "yolo":
                     for frame, (track_id, center, boxes, angles, majors, minors, conf) in enumerate(
                         zip(track_ids, centroids, bounding_boxes, orientations, major_lengths, minor_lengths, confs)
                     ):
                         # No headers for easier merging
-                        for track, (x, y), (b0, b1, b2, b3), angle, major, minor, c in zip(
+                        for track, (x, y), (b1, b0, b3, b2), angle, major, minor, c in zip(
                             track_id, center, boxes, angles, majors, minors, conf
                         ):
                             if track >= 0:
@@ -1855,7 +1859,7 @@ class TrackFileThread(QtCore.QThread):
                         zip(centroids, bounding_boxes, orientations, major_lengths, minor_lengths, confs)
                     ):
                         # No headers for easier merging
-                        for (x, y), (b0, b1, b2, b3), angle, major, minor, c  in zip(
+                        for (x, y), (b1, b0, b3, b2), angle, major, minor, c  in zip(
                             center, boxes, angles, majors, minors, conf
                         ):
                             f.write(
