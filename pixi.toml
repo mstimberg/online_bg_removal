@@ -14,7 +14,6 @@ imageio = ">=2.37.0,<3"
 imageio-ffmpeg = ">=0.6.0,<0.7"
 pandas = ">=3.0.3,<4"
 psutil = ">=7.2.2,<8"
-libtiff = ">=4.7.2,<5"
 pyqtgraph = ">=0.14.0,<0.15"
 pyside6 = ">=6.7.2,<7"
 pyyaml = ">=6.0.3,<7"
@@ -72,3 +71,6 @@ yolo = ["gpu", "yolo"]
 
 [tasks]
 gui = "python background_remover.pyw"
+
+[pypi-dependencies]
+pylibtiff = ">=0.7.0, <0.8"
