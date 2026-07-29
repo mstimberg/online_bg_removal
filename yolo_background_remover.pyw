@@ -790,6 +790,8 @@ def extract_patches_centroid_theta(image, boxes_float):
     masked_image       : (H, W) uint8 image with only box pixels preserved
     centroid_global    : (N, 2) centroid in image coords (x, y)
     orientation        : (N,) orientation angle in radians
+    major_axis_length  : (N,) major axis length of the thresholded intensity distribution
+    minor_axis_length  : (N,) minor axis length of the thresholded intensity distribution
     """
     device = image.device
     work_dtype = torch.float32 if image.dtype in (torch.float16, torch.bfloat16) else image.dtype
@@ -805,6 +807,8 @@ def extract_patches_centroid_theta(image, boxes_float):
                 "masked_image": torch.ones((H, W), dtype=torch.uint8, device=device) * 255,
                 "centroid_global": torch.zeros((0, 2), dtype=work_dtype, device=device),
                 "orientation": torch.zeros((0,), dtype=work_dtype, device=device),
+                "major_axis_length": torch.zeros((0,), dtype=work_dtype, device=device),
+                "minor_axis_length": torch.zeros((0,), dtype=work_dtype, device=device),
             })
             continue
 
@@ -888,6 +892,17 @@ def extract_patches_centroid_theta(image, boxes_float):
         mu20 = torch.where(valid_mass, mu20, torch.zeros_like(mu20))
         mu02 = torch.where(valid_mass, mu02, torch.zeros_like(mu02))
         mu11 = torch.where(valid_mass, mu11, torch.zeros_like(mu11))
+
+        covariance = torch.stack(
+            [
+                torch.stack([mu20, mu11], dim=1),
+                torch.stack([mu11, mu02], dim=1),
+            ],
+            dim=1,
+        )
+        eigvals, _ = torch.linalg.eigh(covariance)        
+        minor_axis_length = 4.0 * torch.sqrt(eigvals[:, 0].clamp_min(0))
+        major_axis_length = 4.0 * torch.sqrt(eigvals[:, 1].clamp_min(0))
         
         # Moments are accumulated as (y, x), so the x/y difference is reversed here.
         mu2_diff = mu02 - mu20
@@ -911,6 +926,8 @@ def extract_patches_centroid_theta(image, boxes_float):
             "masked_image": masked_image.mul(255).to(torch.uint8),
             "centroid": centroid_global_xy,
             "orientation": theta,
+            "major_axis_length": major_axis_length,
+            "minor_axis_length": minor_axis_length,
         })
 
     return outputs
@@ -1101,6 +1118,8 @@ class YoloBackgroundRemover(QtCore.QThread):
                 "masked_image": f["masked_image"].cpu().numpy(),
                 "orientation": f["orientation"],
                 "centroid": f["centroid"],
+                "major_axis_length": f["major_axis_length"],
+                "minor_axis_length": f["minor_axis_length"],
                 "conf": r.boxes.conf,
             }
             if r.boxes.is_track:
@@ -1153,6 +1172,8 @@ class YoloBackgroundRemover(QtCore.QThread):
             bounding_boxes = [r["boxes"] for r in results]
             masked_images = [r["masked_image"] for r in results]
             orientations = [r["orientation"] for r in results]
+            major_axis_length = [r["major_axis_length"] for r in results]
+            minor_axis_length = [r["minor_axis_length"] for r in results]
             centroids = [r["centroid"] for r in results]
             conf = [r["conf"] for r in results]
             if self.link_tracks and self.track_settings["package"] == "yolo":
@@ -1174,6 +1195,8 @@ class YoloBackgroundRemover(QtCore.QThread):
                 "n_frames": buffer_size,
                 "bounding_boxes": bounding_boxes,
                 "orientations": orientations,
+                "major_axis_length": major_axis_length,
+                "minor_axis_length": minor_axis_length,
                 "centroids": centroids,
                 "conf": conf,
             }
@@ -1778,6 +1801,8 @@ class TrackFileThread(QtCore.QThread):
                 relative_start_idx,
                 bounding_boxes,
                 orientations,
+                major_lengths,
+                minor_lengths,
                 centroids,
                 confs,
             ) = (
@@ -1787,6 +1812,8 @@ class TrackFileThread(QtCore.QThread):
                 task["relative_start_idx"],
                 task["bounding_boxes"],
                 task["orientations"],
+                task["major_axis_length"],
+                task["minor_axis_length"],
                 task["centroids"],
                 task["conf"],
             )
@@ -1806,33 +1833,33 @@ class TrackFileThread(QtCore.QThread):
             # We write the file manually, no need to go through pandas
             with open(fname, "wt") as f:
                 if self.link and self.track_settings["package"] == "yolo":
-                    for frame, (track_id, center, boxes, angles, conf) in enumerate(
-                        zip(track_ids, centroids, bounding_boxes, orientations, confs)
+                    for frame, (track_id, center, boxes, angles, majors, minors, conf) in enumerate(
+                        zip(track_ids, centroids, bounding_boxes, orientations, major_lengths, minor_lengths, confs)
                     ):
                         # No headers for easier merging
-                        for track, (x, y), (b0, b1, b2, b3), angle, c in zip(
-                            track_id, center, boxes, angles, conf
+                        for track, (x, y), (b0, b1, b2, b3), angle, major, minor, c in zip(
+                            track_id, center, boxes, angles, majors, minors, conf
                         ):
                             if track >= 0:
                                 f.write(
-                                    f"{frame + start_idx}\t{int(track)}\t{x}\t{y}\t{b0}\t{b1}\t{b2}\t{b3}\t{angle:.2f}\t{c:.2f}\n"
+                                    f"{frame + start_idx}\t{int(track)}\t{x}\t{y}\t{b0}\t{b1}\t{b2}\t{b3}\t{angle:.2f}\t{major:.2f}\t{minor:.2f}\t{c:.2f}\n"
                                 )
                             else:
                                 # Do not write any idea if Yolo did not return one
                                 f.write(
-                                    f"{frame + start_idx}\t\t{x}\t{y}\t{b0}\t{b1}\t{b2}\t{b3}\t{angle:.2f}\t{c:.2f}\n"
+                                    f"{frame + start_idx}\t\t{x}\t{y}\t{b0}\t{b1}\t{b2}\t{b3}\t{angle:.2f}\t{major:.2f}\t{minor:.2f}\t{c:.2f}\n"
                                 )
                             
                 else:
-                    for frame, (center, boxes, angles, conf) in enumerate(
-                        zip(centroids, bounding_boxes, orientations, confs)
+                    for frame, (center, boxes, angles, majors, minors, conf) in enumerate(
+                        zip(centroids, bounding_boxes, orientations, major_lengths, minor_lengths, confs)
                     ):
                         # No headers for easier merging
-                        for (x, y), (b0, b1, b2, b3), angle, c  in zip(
-                            center, boxes, angles, conf
+                        for (x, y), (b0, b1, b2, b3), angle, major, minor, c  in zip(
+                            center, boxes, angles, majors, minors, conf
                         ):
                             f.write(
-                                f"{frame + start_idx}\t{x}\t{y}\t{b0}\t{b1}\t{b2}\t{b3}\t{angle:.2f}\t{c:.2f}\n"
+                                f"{frame + start_idx}\t{x}\t{y}\t{b0}\t{b1}\t{b2}\t{b3}\t{angle:.2f}\t{major:.2f}\t{minor:.2f}\t{c:.2f}\n"
                             )
             self.track_queue.task_done(last_idx)
 
@@ -1849,9 +1876,9 @@ class TrackFileThread(QtCore.QThread):
         with open(fname, "wt") as out_f:
             # Write header
             if self.link_tracks and self.track_settings["package"] == "yolo":
-                out_f.write("frame\tid\tx\ty\tbbox-0\tbbox-1\tbbox-2\tbbox-3\tangle\tconf\n")
+                out_f.write("frame\tid\tx\ty\tbbox-0\tbbox-1\tbbox-2\tbbox-3\tangle\tlength\twidth\tconf\n")
             else:
-                out_f.write("frame\tx\ty\tbbox-0\tbbox-1\tbbox-2\tbbox-3\tangle\tconf\n")
+                out_f.write("frame\tx\ty\tbbox-0\tbbox-1\tbbox-2\tbbox-3\tangle\tlength\twidth\tconf\n")
             for in_fname in self.track_file_list:
                 with open(in_fname, "rt") as in_f:
                     shutil.copyfileobj(in_f, out_f)
